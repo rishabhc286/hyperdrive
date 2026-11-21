@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: hyperdrive-backend
+
+server:
+  # Development default: listen on loopback only. Override with HYPERDRIVE_BACKEND_ADDRESS.
+  address: ${HYPERDRIVE_BACKEND_ADDRESS:127.0.0.1}
+  port: ${HYPERDRIVE_BACKEND_PORT:18080}
+  error:
+    # Never leak internals in error responses.
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+    include-exception: false

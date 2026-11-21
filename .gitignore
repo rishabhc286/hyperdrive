@@ -1,0 +1,25 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Node / Electron / Vite
+node_modules/
+desktop/out/
+desktop/dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Java / Maven
+backend/target/
+**/.mvn/wrapper/maven-wrapper.jar
+
+# IDEs and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
