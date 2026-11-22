@@ -1,86 +1,51 @@
-import { useState } from 'react';
 import type { HyperdriveApi } from '../../shared/backend-health';
-import { useBackendHealth, type BackendStatus } from './useBackendHealth';
-import { SECTIONS, SectionView, type SectionId } from './sections';
+import { AuthLayout, CheckingScreen, SigningInScreen, UnavailableScreen, WelcomeScreen } from './AuthScreens';
+import { OnboardingScreen } from './OnboardingScreen';
+import { Shell } from './Shell';
+import { useAuthStatus } from './useAuthStatus';
+import { useBackendHealth } from './useBackendHealth';
 
 export interface AppProps {
   /** Preload bridge. Injected so tests can supply a mock. */
   readonly api: HyperdriveApi | undefined;
 }
 
+/** Root: routes between the auth states and the signed-in shell. */
 export function App({ api }: AppProps) {
-  const [active, setActive] = useState<SectionId>('overview');
-  const { status, recheck } = useBackendHealth(api);
+  const auth = useAuthStatus(api?.auth);
+  const { status: backend, recheck } = useBackendHealth(api);
 
-  return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <BrandMark />
-          <span className="brand-name">HyperDrive</span>
-        </div>
-        <nav aria-label="Main">
-          <ul className="nav-list">
-            {SECTIONS.map((section) => (
-              <li key={section.id}>
-                <button
-                  type="button"
-                  className="nav-item"
-                  aria-current={active === section.id ? 'page' : undefined}
-                  onClick={() => setActive(section.id)}
-                >
-                  {section.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-      </aside>
-
-      <div className="main">
-        <header className="topbar">
-          <span className="badge badge-dev">Development build</span>
-          <BackendIndicator status={status} />
-        </header>
-        <main className="content" id="content">
-          <SectionView
-            section={active}
-            backendStatus={status}
-            onRecheckBackend={recheck}
-            onNavigate={setActive}
-          />
-        </main>
-      </div>
-    </div>
-  );
-}
-
-export function backendStatusLabel(status: BackendStatus): string {
-  switch (status.state) {
-    case 'checking':
-      return 'Backend: checking';
-    case 'connected':
-      return 'Backend: connected';
-    case 'unavailable':
-      return 'Backend: unavailable';
+  if (auth.phase === 'signed-in' && auth.user && api) {
+    return <Shell user={auth.user} backendStatus={backend} onRecheckBackend={recheck} onSignOut={() => void api.auth.signOut()} />;
   }
-}
 
-function BackendIndicator({ status }: { status: BackendStatus }) {
   return (
-    <span className={`status status-${status.state}`} role="status" aria-live="polite">
-      <span className="status-dot" aria-hidden="true" />
-      {backendStatusLabel(status)}
-    </span>
+    <AuthLayout backendStatus={backend}>
+      {renderAuthScreen()}
+    </AuthLayout>
   );
-}
 
-function BrandMark() {
-  return (
-    <svg className="brand-mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
-      <rect x="2" y="5" width="20" height="14" rx="3" fill="none" stroke="currentColor" strokeWidth="2" />
-      <path d="M6 15h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <circle cx="17" cy="15" r="1.5" fill="currentColor" />
-    </svg>
-  );
+  function renderAuthScreen() {
+    switch (auth.phase) {
+      case 'checking':
+        return <CheckingScreen />;
+      case 'unavailable':
+        return <UnavailableScreen reason={auth.unavailableReason} onRetry={() => void api?.auth.retry()} />;
+      case 'signing-in':
+        return <SigningInScreen onCancel={() => void api?.auth.cancelSignIn()} />;
+      case 'onboarding':
+        return api && auth.user ? <OnboardingScreen api={api.auth} user={auth.user} /> : <CheckingScreen />;
+      case 'signed-out':
+      case 'session-expired':
+      case 'signed-in': // signed-in without a user cannot happen; fall back to the welcome screen
+        return (
+          <WelcomeScreen
+            expired={auth.phase === 'session-expired'}
+            notice={auth.notice}
+            persistence={auth.sessionPersistence}
+            onContinue={() => void api?.auth.signInWithGoogle()}
+          />
+        );
+    }
+  }
 }

@@ -8,16 +8,23 @@ See the [README](../README.md) for setup and run commands. This page covers deta
 | --- | --- | --- | --- |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT` | Docker Compose | `./.env`, read automatically by `docker compose` | `hyperdrive`, `hyperdrive`, **required**, `5432` |
 | `REDIS_PASSWORD`, `REDIS_PORT` | Docker Compose (`redis` profile) | `./.env` | **required when used**, `6379` |
-| `HYPERDRIVE_BACKEND_ADDRESS` | Backend | Process environment (Spring placeholders in `application.yaml`) | `127.0.0.1` |
-| `HYPERDRIVE_BACKEND_PORT` | Backend | Process environment | `18080` |
+| `HYPERDRIVE_BACKEND_ADDRESS`, `HYPERDRIVE_BACKEND_PORT` | Backend | Process environment | `127.0.0.1`, `18080` |
+| `SPRING_PROFILES_ACTIVE` | Backend | Process environment | unset (health-only mode); `auth` enables sign-in |
+| `HYPERDRIVE_DB_URL`, `HYPERDRIVE_DB_USERNAME`, `HYPERDRIVE_DB_PASSWORD` | Backend (auth) | Process environment | `jdbc:postgresql://127.0.0.1:5432/hyperdrive`, `hyperdrive`, **required** |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Backend (auth) | Process environment | **required** (startup fails without them) |
+| `HYPERDRIVE_PUBLIC_BASE_URL` | Backend (auth) | Process environment | **required**, e.g. `http://127.0.0.1:18080` |
+| `HYPERDRIVE_SECURE_COOKIES` | Backend (auth) | Process environment | `false` (set `true` behind https) |
 | `HYPERDRIVE_BACKEND_URL` | Desktop **main process** only | Process environment (`process.env`) | `http://127.0.0.1:18080` |
 
 Neither the backend nor the desktop loads `.env`. Set variables in the PowerShell session that
-starts them (`$env:NAME = "value"`). The renderer never receives environment variables, and no
-secrets exist in the desktop app.
+starts them (`$env:NAME = "value"`). The renderer never receives environment variables, and the
+desktop holds no backend secrets.
 
-Why port 18080 and not 8080: 8080 is commonly occupied by other local web servers (on the
-development machine it was taken by an Apache `httpd`).
+**Ports:**
+- **18080 instead of 8080:** 8080 is commonly occupied by other local web servers. On the
+  development machine an Apache `httpd` was using it.
+- **5432:** a native PostgreSQL install may already use it. Set `POSTGRES_PORT` (e.g. `55432`)
+  in `.env` and the same port in `HYPERDRIVE_DB_URL`.
 
 ## Desktop (`desktop/`)
 
@@ -29,23 +36,26 @@ development machine it was taken by an Apache `httpd`).
 | `npm start` | Run the built app from `out/` (`electron-vite preview`) |
 | `npm run typecheck` | `tsc` for the main/preload (`tsconfig.node.json`) and renderer (`tsconfig.web.json`) projects |
 | `npm run lint` | ESLint (typescript-eslint strict + react-hooks) |
-| `npm test` | Vitest: renderer tests in jsdom, main-process tests in node |
+| `npm test` | Vitest: renderer tests in jsdom, main-process tests in node (including a real loopback HTTP listener) |
 | `npm run check` | typecheck, lint, test, build |
 
 Layout:
 
 ```
-src/main/       Electron main process: window, security hardening, IPC, health check
-src/preload/    contextBridge API (one function)
-src/shared/     Types shared by all three contexts (no runtime dependencies)
-src/renderer/   React UI (index.html, src/)
-test/setup.ts   Vitest setup (jest-dom matchers, cleanup)
+src/main/               Electron main process: window, hardening, IPC, health check
+src/main/auth/          Sign-in: PKCE, loopback listener, backend client, token store, AuthManager
+src/main/ipc-validation.ts   Payload validation for renderer → main calls
+src/preload/            contextBridge API (health + auth status/actions, no tokens)
+src/shared/             Types and rules shared by all contexts (auth status, username rules)
+src/renderer/src/       React UI: App (routing by auth phase), auth screens, onboarding, Shell
+test/                   Vitest setup and the mock preload bridge used by renderer tests
 ```
 
 Version notes:
 - TypeScript is pinned to **6.0.3**, not 7.x, because typescript-eslint 8.73 supports only
   `typescript < 6.1`.
-- `electron` 45 downloads its binary the first time it runs, not during `npm install`.
+- `electron` 45 downloads its binary the first time it runs, not during `npm install`. After
+  `npm ci`, the first `npm run dev` or `npm start` downloads it again.
 
 Packaging (installer, code signing) is not set up yet.
 
@@ -53,17 +63,48 @@ Packaging (installer, code signing) is not set up yet.
 
 | Command | What it does |
 | --- | --- |
-| `.\mvnw.cmd verify` | Compile (Java 21 bytecode) and run tests |
-| `.\mvnw.cmd spring-boot:run` | Run on `127.0.0.1:18080` |
+| `.\mvnw.cmd verify` | Compile (Java 21 bytecode) and run all tests; database tests need Docker |
+| `.\mvnw.cmd spring-boot:run` | Run on `127.0.0.1:18080` (health-only unless `SPRING_PROFILES_ACTIVE=auth`) |
 | `.\mvnw.cmd package` then `java -jar target\hyperdrive-backend-0.1.0-SNAPSHOT.jar` | Run the packaged jar |
 
-- Spring Boot **4.2.0**, Java release **21** (`maven-enforcer-plugin` requires JDK 21+).
-- Only `spring-boot-starter-webmvc` is on the runtime classpath. There is no Actuator, no JDBC and
-  no Redis client, so startup cannot depend on optional services.
-- Error responses never include stack traces, messages or exception names.
-- No authentication exists yet. Keep the default loopback binding.
+- **Versions:** Spring Boot **4.2.0** (Spring Security 7.2), Java release **21**
+  (`maven-enforcer-plugin` requires JDK 21+).
+- **Packages:**
+
+  ```
+  com.hyperdrive.backend
+    auth/            SecureTokens, Pkce, startup check, cleanup job
+    auth/desktop/    login transactions, desktop + browser controllers, OAuth glue and handlers
+    auth/session/    device sessions, rotation/replay, bearer principal
+    user/            accounts, identities, onboarding, /api/v1/me
+    security/        filter chains (auth-enabled and health-only)
+    web/             correlation IDs, rate limiting, sanitized errors
+    health/          liveness and readiness
+  ```
+- **Database access:** plain `JdbcClient` with explicit SQL. Every single-use or rotating state
+  change is one conditional `UPDATE … RETURNING`. Migrations live in
+  `src/main/resources/db/migration` (Flyway).
+- **Auth-disabled mode:** database auto-configuration is excluded in `application.yaml` and
+  re-enabled by `application-auth.yaml`.
+
+### Backend tests
+
+- **Unit tests** (no Docker): PKCE (RFC 7636 test vector), token format, username rules, loopback
+  URL construction, startup validation, rate limiter, correlation IDs, readiness with a broken
+  database.
+- **Integration tests** (`AuthIntegrationTest` base): run against **PostgreSQL 18 via
+  Testcontainers** with the real Flyway migrations, and against `FakeOidcProvider`, an in-process
+  OIDC provider (discovery, token, JWKS, userinfo) that signs real RS256 ID tokens. That means
+  Spring Security's OIDC validation runs unmodified. No live Google credentials are needed.
+- **Without Docker:** the integration classes are **skipped** (`disabledWithoutDocker`). Maven
+  reports them as skipped, never as passed.
 
 ## Development services
 
 See the README. `compose.yaml` refuses to start PostgreSQL without `POSTGRES_PASSWORD` and Redis
-without `REDIS_PASSWORD`. Host ports bind to `127.0.0.1` only.
+without `REDIS_PASSWORD`. Host ports bind to `127.0.0.1` only. Nothing uses Redis yet.
+
+**Compose project name:** `compose.yaml` uses the project name `hyperdrive`. If older containers
+or volumes with that project name exist on your machine (for example from an earlier codebase),
+Compose treats them as part of this project. List them with
+`docker ps -a --filter label=com.docker.compose.project=hyperdrive`.

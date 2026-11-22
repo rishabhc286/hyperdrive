@@ -1,5 +1,111 @@
 # Progress
 
+## Batch 2: Google sign-in, accounts, onboarding, desktop sessions (2026-11-21)
+
+### Completed
+
+- **Backend** (`SPRING_PROFILES_ACTIVE=auth`; the default stays health-only):
+  - Google sign-in via Spring Security OAuth2 Client (`openid profile email` only), with a
+    desktop loopback + PKCE handoff.
+  - Automatic account creation keyed on OIDC issuer + subject.
+  - Username onboarding: rules, reserved names, case-insensitive uniqueness, a database
+    constraint for races, and an onboarding gate.
+  - Opaque access and refresh tokens, stored hashed, with atomic rotation, replay → family
+    revocation, and logout.
+  - Readiness endpoint, correlation IDs, sanitized problem responses, in-memory rate limits, an
+    expired-data cleanup job, and fail-fast startup checks.
+  - Flyway migration `V1__authentication.sql`.
+- **Desktop:**
+  - `AuthManager` in the main process: loopback listener, PKCE, sign-in orchestration with cancel
+    and timeout, single-flight refresh, and sign-out that always clears local credentials.
+  - `safeStorage` token store with no plaintext fallback.
+  - A narrow preload `auth` API and validated IPC.
+  - React screens for all 8 states: checking, signed out, browser sign-in in progress,
+    cancelled/failed, onboarding, signed in, session expired, unavailable/not configured.
+- **Docs:** `authentication.md` (flow, endpoints, schema, Google Console setup, manual QA),
+  `security.md`, and updates to README, architecture, development and `.env.example`.
+
+### Foundation fixes and changes (separate from new features)
+
+- **Deny-by-default security:** with Spring Security on the classpath, unknown paths and wrong
+  methods now return **403** instead of 404/405. The Batch 1 tests were updated deliberately.
+- **Slice test:** `HealthControllerTest` (`@WebMvcTest`) now imports the health-only security
+  configuration.
+- **Desktop tooling:** ESLint now allows `_`-prefixed unused arguments, and allows non-null
+  assertions in test files only.
+- **No Batch 1 defects found:** all Batch 1 checks passed before any changes.
+
+### Defect found during manual verification, then fixed
+
+- **Placeholder taken literally:** with `SPRING_PROFILES_ACTIVE=auth` but **no**
+  `GOOGLE_CLIENT_ID`, the backend started and reported READY. Spring kept the literal
+  `${GOOGLE_CLIENT_ID}` text as the client ID.
+- **Fix:** required variables now default to empty, and `AuthStartupCheck` rejects blank or
+  unresolved values and a mismatched redirect URI.
+- **Re-verified:** startup now fails with
+  `Client id of registration 'google' must not be empty`. Unit tests were added.
+
+### Checks executed (Windows 11, Docker 29.7.2, JDK 25.0.5, Node 24.19.0)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend unit + integration tests | `.\mvnw.cmd verify` | **Passed**: 111 tests, 0 failures, **0 skipped** (Docker running; PostgreSQL 18 via Testcontainers) |
+| Desktop type check / lint | `npm run typecheck`, `npm run lint` | **Passed** (0 errors / 0 problems) |
+| Desktop tests | `npm test` | **Passed**: 110 tests in 9 files |
+| Desktop build | `npm run build` | **Passed**; no token-format strings in the renderer bundle |
+| Migration on Compose PostgreSQL 18 | Backend start with `auth` profile against `docker compose up -d postgres` | **Passed**: V1 applied, all 6 tables present, later start "up to date" |
+| Compose PostgreSQL health check | `docker compose up -d postgres` | **Passed**: became `healthy` (first time executed) |
+| Missing Google config | Start with `auth` profile and no `GOOGLE_*` | **Fails fast** as intended (after the fix above) |
+| Real Google authorization request | `GET /authorize/{id}` with a placeholder client ID | **Passed**: 302 to `accounts.google.com/o/oauth2/v2/auth`, scopes exactly `openid profile email`, state + nonce + S256 PKCE, cookie `HttpOnly; SameSite=Lax` |
+| Electron, auth-enabled backend | Built app read over CDP | **Passed** (details below) |
+| Electron, health-only backend | Built app read over CDP | **Passed**: "Sign-in isn't enabled" |
+| Electron, backend stopped | Built app read over CDP | **Passed**: "Can't reach HyperDrive" with Try again |
+
+Electron with the auth-enabled backend showed:
+- The welcome screen, with a single "Continue with Google" button and no inputs.
+- `sessionPersistence: "encrypted"`, so DPAPI is available.
+- The bridge exposes only the 7 auth functions plus the health check.
+- A malformed onboarding payload was rejected by the main process.
+
+Mutation checks confirm the tests can fail:
+- PKCE always accepting → `wrongVerifierFailsAndBurnsTheCode` failed.
+- No revocation on replay → `replayingAConsumedRefreshTokenRevokesTheWholeSession` failed.
+- Refresh not single-flight → the concurrency test failed (5 refreshes instead of 1).
+
+### Requires manual verification (not executed)
+
+- **Live Google sign-in end to end:** no Google OAuth client credentials were available. This
+  covers consent, the callback, the loopback handoff in a real browser, and the session
+  remembered across a real restart. Follow the manual QA checklist in
+  [authentication.md](authentication.md#manual-qa-checklist-requires-real-google-credentials).
+- **"Continue with Google" in the real app:** not clicked, because it would have opened your
+  browser with a placeholder client.
+- **`127.0.0.1` redirect URI:** whether Google Cloud Console accepts it for a Web client has not
+  been checked; a `localhost` fallback is documented.
+
+### Known limitations
+
+- **Session lifetime:** an absolute 30-day session (no sliding renewal), and no device list or
+  "sign out everywhere".
+- **Single instance:** rate limiting is in memory and single-instance, with no proxy support
+  (`X-Forwarded-*` ignored).
+- **Java version:** still compiled for Java 21 but only executed on JDK 25.
+- **Mockito warning:** backend tests still print the harmless Mockito self-attach warning on
+  JDK 25.
+- **Electron binary after `npm ci`:** `npm ci` removes the downloaded Electron binary, and it's
+  fetched again on the next run.
+- **Leftovers from the earlier codebase:** they were removed on 2026-11-22 after a verified
+  backup. These were the old `hyperdrive-redis-1` container, its volume, and the PostgreSQL 17
+  volume `hyperdrive_pgdata`. The backups are in `C:\Users\chaud\Downloads\hyperdrive-old-docker-backup\`,
+  outside the repo. Only the new `hyperdrive-postgres-1` and `hyperdrive_postgres-data` remain.
+
+### Next suggested batch
+
+Google Drive connection as a **separate** consent flow:
+- Drive-specific scopes and an encrypted provider-token store.
+- A connected-accounts model, where disconnecting never deletes the HyperDrive account.
+- Read-only listing in the Files view.
+
 ## Batch 1: monorepo foundation (2026-11-21)
 
 ### Completed

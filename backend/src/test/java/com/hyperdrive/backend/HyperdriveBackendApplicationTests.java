@@ -36,16 +36,37 @@ class HyperdriveBackendApplicationTests {
 
     @Test
     void actuatorEndpointsAreNotExposed() throws Exception {
-        assertThat(send("/actuator").statusCode()).isEqualTo(404);
-        assertThat(send("/actuator/env").statusCode()).isEqualTo(404);
+        // Health-only mode denies every path except liveness and readiness.
+        assertThat(send("/actuator").statusCode()).isEqualTo(403);
+        assertThat(send("/actuator/env").statusCode()).isEqualTo(403);
     }
 
     @Test
     void errorResponsesDoNotLeakInternals() throws Exception {
         HttpResponse<String> response = send("/does-not-exist");
 
-        assertThat(response.statusCode()).isEqualTo(404);
+        assertThat(response.statusCode()).isEqualTo(403);
         assertThat(response.body()).doesNotContain("trace", "exception", "at com.");
+    }
+
+    @Test
+    void readinessReportsAuthDisabledWithoutAnyDatabase() throws Exception {
+        HttpResponse<String> response = send("/api/v1/ready");
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).isEqualTo("{\"status\":\"READY\",\"auth\":\"DISABLED\"}");
+    }
+
+    @Test
+    void authEndpointsDoNotExistWhenAuthIsDisabled() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/v1/auth/desktop/transactions"))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(5))
+                .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                .build();
+        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(403);
+        assertThat(send("/api/v1/me").statusCode()).isEqualTo(403);
+        assertThat(send("/oauth2/authorization/google").statusCode()).isEqualTo(403);
     }
 
     private HttpResponse<String> send(String path) throws Exception {

@@ -1,6 +1,22 @@
+# Default profile = health-only mode (Batch 1 behavior): no database, no sign-in.
+# Enable sign-in with SPRING_PROFILES_ACTIVE=auth (see application-auth.yaml and docs/authentication.md).
+
 spring:
   application:
     name: hyperdrive-backend
+  autoconfigure:
+    # Without the auth profile nothing may touch PostgreSQL, so database auto-configuration is off.
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.JdbcClientAutoConfiguration
+      - org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration
+      - org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
+  jackson:
+    deserialization:
+      # Reject unexpected JSON fields (e.g. a client-supplied user id).
+      fail-on-unknown-properties: true
 
 server:
   # Development default: listen on loopback only. Override with HYPERDRIVE_BACKEND_ADDRESS.
@@ -12,3 +28,15 @@ server:
     include-message: never
     include-binding-errors: never
     include-exception: false
+
+hyperdrive:
+  auth:
+    enabled: false
+
+logging:
+  pattern:
+    # Correlation id from CorrelationIdFilter on every log line.
+    level: "%5p [cid:%X{correlationId:-}]"
+  level:
+    # DEBUG here would log redirect URLs (which carry one-time handoff codes). Keep at INFO or above.
+    org.springframework.security: INFO

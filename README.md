@@ -5,33 +5,35 @@ HyperDrive is a Windows desktop application, in early development, that will bri
 Files will stream on demand in 4 MiB chunks and be cached on the local disk, so they don't need
 to be downloaded in full first.
 
-> **Status: foundation only.** This repository currently contains a desktop shell and a backend
-> health endpoint. There is no sign-in, no cloud connection, no virtual drive, and no file access yet.
-> See [docs/progress.md](docs/progress.md).
+> **Status: accounts only.** You can sign in with Google, which creates a HyperDrive account,
+> and choose a username. There is **no cloud-storage connection, file browsing, virtual drive or
+> caching yet**. Signing in does **not** connect Google Drive. See [docs/progress.md](docs/progress.md).
 
 The launch website is a separate project and is not part of this repository.
 
-## What this batch implements
+## What exists so far
 
-- **Desktop shell** (`desktop/`): Electron + React + TypeScript + Vite (via electron-vite).
-  - Dark-theme UI with sidebar navigation: Overview, Files, Cloud Accounts, Performance, Settings.
-  - Each section shows an honest empty state ("No cloud accounts connected.", and so on).
-  - "Development build" indicator.
-  - Live backend status (checking / connected / unavailable), checked by the Electron main
-    process every 15 s and on demand.
-  - Disabled "Connect Google Drive" / "Connect Dropbox" buttons that explain why they are disabled.
-  - Hardened Electron configuration (see [docs/architecture.md](docs/architecture.md#desktop-security)).
-- **Backend** (`backend/`): Java 21 + Spring Boot 4.2 + Maven Wrapper, serving
-  `GET /api/v1/health`. Starts without PostgreSQL or Redis.
-- **Development services** (`compose.yaml`): PostgreSQL 18, plus optional Redis 8 behind a profile.
-- Tests for the backend, the desktop UI and the desktop main-process logic.
+- **Batch 1 (foundation):** Electron + React desktop shell, Spring Boot backend with
+  liveness/readiness endpoints, Docker Compose for PostgreSQL (and optional Redis).
+- **Batch 2 (accounts):**
+  - Google sign-in through the system browser, with a PKCE-protected loopback handoff to the app.
+  - A HyperDrive account is created automatically on first sign-in, followed by first-time
+    username onboarding.
+  - Opaque device sessions: 15-minute access tokens and rotating refresh tokens with replay
+    detection.
+  - The desktop stores sessions with OS encryption (Electron `safeStorage`).
+  - Sign-out revokes the session on the server when it can be reached.
 
-## What is *not* implemented
+Design and security details: [docs/authentication.md](docs/authentication.md) ·
+[docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
 
-Sign-in and accounts, username onboarding, Google Drive or Dropbox connections, file browsing,
-the local agent (`agent/`), the WinFsp virtual drive (`vfs/`), streaming, caching, metrics,
-installer/packaging, production authentication and deployment hardening. The backend has **no
-authentication** and must not be exposed beyond your own machine.
+## Not implemented yet
+
+- Connecting Google Drive or Dropbox, file browsing, the local agent (`agent/`), and the WinFsp
+  virtual drive (`vfs/`).
+- Streaming, caching and metrics.
+- Username editing, and a device list or "sign out everywhere".
+- Installer/packaging, and production deployment hardening (proxy/HTTPS support).
 
 ## Prerequisites
 
@@ -40,124 +42,111 @@ authentication** and must not be exposed beyond your own machine.
 | Windows 10/11 | x64 | Running the desktop app (target platform) |
 | Node.js | 22.12+ (tested with 24.19.0) and npm | Desktop |
 | JDK | 21 or newer (tested with JDK 25, compiled for Java 21) | Backend |
-| Docker Desktop | Optional (Compose v2) | PostgreSQL / Redis only |
+| Docker Desktop | Compose v2 | PostgreSQL for sign-in, and the backend's database tests (Testcontainers) |
+| Google Cloud OAuth client | "Web application" type | Real sign-in only; see [setup](docs/authentication.md#google-cloud-console-setup) |
 
-Maven is **not** required: use the bundled wrapper (`mvnw.cmd`), which downloads Maven 3.9.16
-on first use. `npm ci` downloads Electron's binary into `desktop/node_modules` the first time
-Electron runs.
+Maven is not required: use the bundled wrapper (`mvnw.cmd`). Electron downloads its binary into
+`desktop/node_modules` the first time it runs.
 
 ## Setup (Windows PowerShell)
 
 ```powershell
 cd C:\path\to\Hyperdrive
-
-# Desktop dependencies (exact versions from package-lock.json)
-cd desktop
-npm ci
-cd ..
-
-# Backend: compile and run tests once (downloads Maven + dependencies on first run)
-cd backend
-.\mvnw.cmd verify
-cd ..
+cd desktop; npm ci; cd ..
+cd backend; .\mvnw.cmd verify; cd ..     # needs Docker running for the database tests
 ```
 
-## Run the backend and desktop together
-
-Use two PowerShell windows.
-
-**Window 1: backend**
+## Run: health-only mode (no database, no sign-in)
 
 ```powershell
+# Window 1
 cd C:\path\to\Hyperdrive\backend
 .\mvnw.cmd spring-boot:run
-# Listens on http://127.0.0.1:18080
-# Check it: Invoke-RestMethod http://127.0.0.1:18080/api/v1/health
-```
 
-**Window 2: desktop (development mode, hot reload)**
-
-```powershell
+# Window 2
 cd C:\path\to\Hyperdrive\desktop
 npm run dev
 ```
 
-The HyperDrive window opens. The status in the top-right shows **Backend: connected** while the
-backend runs, and **Backend: unavailable** if you stop it (it re-checks every 15 s, or press
-**Check again** on the Overview).
+The app shows **"Sign-in isn't enabled"**, because the backend is running without the `auth`
+profile. Nothing simulates a login.
 
-To run the built (non-dev) desktop app instead: `npm run build` then `npm start`.
+## Run: with Google sign-in
 
-### Using a different backend port
+1. Create a Google OAuth client (**Web application**) with the redirect URI
+   `http://127.0.0.1:18080/login/oauth2/code/google`. Step-by-step:
+   [docs/authentication.md](docs/authentication.md#google-cloud-console-setup).
+2. Start PostgreSQL:
+   ```powershell
+   cd C:\path\to\Hyperdrive
+   Copy-Item .env.example .env   # edit POSTGRES_PASSWORD; change POSTGRES_PORT if 5432 is taken
+   docker compose up -d postgres
+   docker compose ps             # wait for "healthy"
+   ```
+3. Backend (window 1). The variables apply to this window only:
+   ```powershell
+   cd C:\path\to\Hyperdrive\backend
+   $env:SPRING_PROFILES_ACTIVE = "auth"
+   $env:HYPERDRIVE_DB_URL = "jdbc:postgresql://127.0.0.1:5432/hyperdrive"   # use your POSTGRES_PORT
+   $env:HYPERDRIVE_DB_PASSWORD = "<POSTGRES_PASSWORD from .env>"
+   $env:GOOGLE_CLIENT_ID = "<client id>"
+   $env:GOOGLE_CLIENT_SECRET = "<client secret>"
+   $env:HYPERDRIVE_PUBLIC_BASE_URL = "http://127.0.0.1:18080"
+   .\mvnw.cmd spring-boot:run
+   ```
+4. Desktop (window 2):
+   ```powershell
+   cd C:\path\to\Hyperdrive\desktop
+   npm run dev
+   ```
+5. Click **Continue with Google**, finish in the browser, then choose a username.
 
-```powershell
-# Window 1
-$env:HYPERDRIVE_BACKEND_PORT = "18081"; .\mvnw.cmd spring-boot:run
-# Window 2
-$env:HYPERDRIVE_BACKEND_URL = "http://127.0.0.1:18081"; npm run dev
-```
+To run the built app instead of the dev server: `npm run build`, then `npm start`.
 
-## Optional development services (PostgreSQL, Redis)
+### Which process reads which setting
 
-Not needed for this batch: nothing connects to them yet.
-
-```powershell
-cd C:\path\to\Hyperdrive
-Copy-Item .env.example .env      # then edit the passwords in .env
-docker compose up -d             # PostgreSQL only
-docker compose --profile redis up -d   # PostgreSQL + Redis
-docker compose ps                # wait for "healthy"
-docker compose down              # stop (data volumes are kept)
-```
-
-Ports are bound to `127.0.0.1` only. See [.env.example](.env.example) for which process reads
-which variable. Only Docker Compose reads `.env`; the backend and desktop read shell
-environment variables.
+Only Docker Compose reads `.env`. The backend and the desktop read environment variables from
+the PowerShell window that starts them. [.env.example](.env.example) documents every variable.
+The Google client secret is used by the backend only; never put it in desktop configuration.
 
 ## Checks
 
 ```powershell
-# Backend: compile + tests
-cd backend;  .\mvnw.cmd verify;  cd ..
-
-# Desktop
-cd desktop
-npm run typecheck
-npm run lint
-npm test
-npm run build
-npm run check      # all four of the above, in order
-cd ..
-
-# Compose file syntax (needs Docker CLI, not a running daemon)
+cd backend;  .\mvnw.cmd verify;  cd ..        # unit + PostgreSQL integration tests (Docker required)
+cd desktop;  npm run check;      cd ..        # typecheck, lint, tests, production build
 docker compose --env-file .env.example config -q
 ```
+
+If Docker isn't running, the backend's database tests are **skipped** (reported as skipped,
+not passed).
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
-| Backend log says `Port 18080 was already in use` | Another program uses the port. Pick another: `$env:HYPERDRIVE_BACKEND_PORT="18081"`, and set `$env:HYPERDRIVE_BACKEND_URL="http://127.0.0.1:18081"` for the desktop. |
-| Desktop shows "did not respond like the HyperDrive backend" | Something else is listening at the configured address. Check `HYPERDRIVE_BACKEND_URL` and the port. |
-| Desktop shows "backend address is not configured correctly" | `HYPERDRIVE_BACKEND_URL` must be an origin only, e.g. `http://127.0.0.1:18080` (no path, query or credentials). |
-| `.\mvnw.cmd` fails with a Java version error | Install JDK 21+ and make sure `java -version` (or `JAVA_HOME`) points to it. |
-| `npm run dev` says Electron failed to install | Delete `desktop\node_modules\electron` and run `npm ci` again; corporate proxies may block the Electron download. |
-| `docker compose` says `POSTGRES_PASSWORD` is missing | Create `.env` from `.env.example`. |
-| `docker compose` cannot connect to the Docker API | Start Docker Desktop. |
-| Stopping the backend from a script leaves it running | On Windows, the `java` launcher in `Common Files\Oracle\Java\javapath` starts a child JVM. Stop the process that owns the port instead. Use Ctrl+C in the terminal normally. |
+| App says "Sign-in isn't enabled" | Start the backend with `$env:SPRING_PROFILES_ACTIVE = "auth"` (and the other variables above). |
+| App says "HyperDrive isn't ready" | The backend can't reach PostgreSQL. Check `docker compose ps`, `HYPERDRIVE_DB_URL` (port!) and `HYPERDRIVE_DB_PASSWORD`. |
+| Backend fails with `Client id of registration 'google' must not be empty` | Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the backend window. |
+| Backend fails with `Google redirect URI must be …` or `HYPERDRIVE_PUBLIC_BASE_URL must be …` | Set `HYPERDRIVE_PUBLIC_BASE_URL` to an origin such as `http://127.0.0.1:18080`. |
+| Google shows `redirect_uri_mismatch` | The redirect URI in Google Cloud Console must equal `<HYPERDRIVE_PUBLIC_BASE_URL>/login/oauth2/code/google` exactly. |
+| Google shows "Access blocked: app not verified / not a test user" | Add your Google account as a test user on the OAuth consent screen. |
+| "Sign-in didn't complete" after choosing an account | Check the backend log (search for the correlation ID). `HYPERDRIVE_BACKEND_URL` (desktop) and `HYPERDRIVE_PUBLIC_BASE_URL` (backend) must be the same origin. |
+| `docker compose up` says port 5432 is not available | Another PostgreSQL is running locally. Set `POSTGRES_PORT=55432` in `.env` and use that port in `HYPERDRIVE_DB_URL`. |
+| Backend log says `Port 18080 was already in use` | Pick another port: `$env:HYPERDRIVE_BACKEND_PORT="18081"`, and update `HYPERDRIVE_PUBLIC_BASE_URL`, `HYPERDRIVE_BACKEND_URL` and the Google redirect URI to match. |
+| You must sign in after every restart | Windows encryption (DPAPI) was unavailable to Electron, so the session is memory-only by design (no plaintext fallback). |
+| `npm run dev` says Electron failed to install | Delete `desktop\node_modules\electron` and run `npm ci`; corporate proxies may block the Electron download. |
+| `.\mvnw.cmd` fails with a Java version error | Install JDK 21+ and point `JAVA_HOME` to it. |
 
 ## Repository layout
 
 ```
-backend/    Spring Boot service (health endpoint only)
+backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions
 desktop/    Electron + React desktop app
 agent/      Planned local agent (README only)
 vfs/        Planned WinFsp virtual drive (README only)
-docs/       Architecture, development notes, progress log
+docs/       Architecture, authentication, security, development notes, progress log
 compose.yaml, .env.example
 ```
-
-More detail: [docs/development.md](docs/development.md) · [docs/architecture.md](docs/architecture.md)
 
 ## License
 

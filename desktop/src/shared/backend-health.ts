@@ -2,6 +2,7 @@
  * Types shared between the Electron main process, the preload script and the renderer.
  * This file must stay free of runtime imports so it can be used in every context.
  */
+import type { AuthApi } from './auth';
 
 /** Why the backend is considered unavailable. Deliberately coarse: no URLs or error text. */
 export type BackendUnavailableReason =
@@ -22,4 +23,5 @@ export const IpcChannel = {
 /** The only API exposed to the renderer through the context bridge. */
 export interface HyperdriveApi {
   checkBackendHealth(): Promise<BackendHealth>;
+  readonly auth: AuthApi;
 }

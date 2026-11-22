@@ -1,9 +1,24 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, session, type IpcMainInvokeEvent } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  safeStorage,
+  session,
+  shell,
+  type IpcMainInvokeEvent
+} from 'electron';
+import { AuthIpcChannel } from '../shared/auth';
 import { IpcChannel, type BackendHealth } from '../shared/backend-health';
+import { AuthManager, isTrustedAuthorizeUrl } from './auth/auth-manager';
+import { BackendApi } from './auth/backend-api';
+import { startLoopbackListener } from './auth/loopback';
+import { createTokenStore } from './auth/token-store';
 import { checkBackendHealth } from './backend-health';
 import { resolveBackendUrl } from './config';
+import { deviceName } from './device-name';
+import { expectNoArgs, parseOnboardingPayload } from './ipc-validation';
 import { isTrustedRendererUrl, type RendererOrigin } from './security';
 
 // Set by electron-vite only while running `npm run dev`.
@@ -18,6 +33,8 @@ const backendUrl = resolveBackendUrl(process.env);
 if (!backendUrl.ok) {
   console.error(`[hyperdrive] ${backendUrl.error}`);
 }
+
+let mainWindow: BrowserWindow | null = null;
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -41,6 +58,9 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.once('ready-to-show', () => window.show());
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null;
+  });
 
   if (devServerUrl) {
     void window.loadURL(devServerUrl);
@@ -71,43 +91,106 @@ function hardenWebContents(): void {
   session.defaultSession.setPermissionCheckHandler(() => false);
 }
 
-function registerIpc(): void {
-  ipcMain.handle(
-    IpcChannel.backendHealth,
-    async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<BackendHealth> => {
-      const senderUrl = event.senderFrame?.url ?? '';
-      if (!isTrustedRendererUrl(senderUrl, rendererOrigin)) {
-        throw new Error('Rejected IPC call from untrusted frame');
-      }
-      if (args.length !== 0) {
-        throw new Error('checkBackendHealth takes no arguments');
-      }
-      if (!backendUrl.ok) {
-        return { state: 'unavailable', reason: 'misconfigured' };
-      }
-      return checkBackendHealth(backendUrl.url);
+/**
+ * Registers an IPC handler that only answers the app's own window, main frame, at the trusted
+ * renderer URL. Handlers receive the raw argument list and must validate it themselves.
+ */
+function handleTrusted(channel: string, handler: (args: unknown[]) => unknown): void {
+  ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+    const frame = event.senderFrame;
+    if (
+      !mainWindow ||
+      event.sender !== mainWindow.webContents ||
+      !frame ||
+      frame !== event.sender.mainFrame ||
+      !isTrustedRendererUrl(frame.url, rendererOrigin)
+    ) {
+      throw new Error('Rejected IPC call from untrusted frame');
     }
-  );
+    return handler(args);
+  });
+}
+
+function registerIpc(auth: AuthManager): void {
+  handleTrusted(IpcChannel.backendHealth, async (args): Promise<BackendHealth> => {
+    expectNoArgs(IpcChannel.backendHealth, args);
+    if (!backendUrl.ok) {
+      return { state: 'unavailable', reason: 'misconfigured' };
+    }
+    return checkBackendHealth(backendUrl.url);
+  });
+
+  handleTrusted(AuthIpcChannel.getStatus, (args) => {
+    expectNoArgs(AuthIpcChannel.getStatus, args);
+    return auth.getStatus();
+  });
+  handleTrusted(AuthIpcChannel.signIn, (args) => {
+    expectNoArgs(AuthIpcChannel.signIn, args);
+    // Runs in the background; progress is pushed via status events.
+    void auth.signInWithGoogle();
+  });
+  handleTrusted(AuthIpcChannel.cancelSignIn, (args) => {
+    expectNoArgs(AuthIpcChannel.cancelSignIn, args);
+    auth.cancelSignIn();
+  });
+  handleTrusted(AuthIpcChannel.completeOnboarding, (args) => {
+    const { username } = parseOnboardingPayload(AuthIpcChannel.completeOnboarding, args);
+    return auth.completeOnboarding(username);
+  });
+  handleTrusted(AuthIpcChannel.signOut, (args) => {
+    expectNoArgs(AuthIpcChannel.signOut, args);
+    return auth.signOut();
+  });
+  handleTrusted(AuthIpcChannel.retry, async (args) => {
+    expectNoArgs(AuthIpcChannel.retry, args);
+    await auth.initialize();
+  });
+
+  auth.onChange((status) => {
+    mainWindow?.webContents.send(AuthIpcChannel.statusChanged, status);
+  });
+}
+
+function createAuthManager(): AuthManager {
+  const api = backendUrl.ok ? new BackendApi(backendUrl.url) : null;
+  const store = createTokenStore(safeStorage, join(app.getPath('userData'), 'session', 'refresh-token.json'));
+  if (store.persistence === 'memory-only') {
+    console.warn('[hyperdrive] OS-level encryption is unavailable; sessions will not survive a restart.');
+  }
+  return new AuthManager({
+    api,
+    store,
+    startLoopback: startLoopbackListener,
+    openExternal: async (url) => {
+      // Defense in depth: AuthManager already validated this; re-check right before opening.
+      if (!api || !isTrustedAuthorizeUrl(url, api.origin)) {
+        throw new Error('Refusing to open an untrusted URL');
+      }
+      await shell.openExternal(url);
+    },
+    deviceName: deviceName()
+  });
 }
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    const [window] = BrowserWindow.getAllWindows();
-    if (window) {
-      if (window.isMinimized()) window.restore();
-      window.focus();
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
     }
   });
 
   void app.whenReady().then(() => {
     hardenWebContents();
-    registerIpc();
-    createMainWindow();
+    const auth = createAuthManager();
+    registerIpc(auth);
+    mainWindow = createMainWindow();
+    void auth.initialize();
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+      if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();
     });
   });
 

@@ -1,73 +1,74 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { createMockApi, ONBOARDED_USER, status } from '../../../test/mock-api';
 import type { BackendHealth, HyperdriveApi } from '../../shared/backend-health';
 import { App } from './App';
 
-function mockApi(result: BackendHealth | Promise<BackendHealth>): HyperdriveApi {
-  return { checkBackendHealth: vi.fn(() => Promise.resolve(result)) };
+const signedIn = () => status('signed-in', { user: ONBOARDED_USER });
+
+async function renderSignedIn(health: BackendHealth | 'pending' = 'pending') {
+  const mock = createMockApi(signedIn(), health);
+  render(<App api={mock.api} />);
+  await screen.findByRole('navigation', { name: 'Main' });
+  return mock;
 }
 
-function pending(): HyperdriveApi {
-  return { checkBackendHealth: vi.fn(() => new Promise<BackendHealth>(() => {})) };
-}
-
-describe('App shell', () => {
-  it('shows branding and the development build indicator', () => {
-    render(<App api={pending()} />);
+describe('signed-in shell', () => {
+  it('shows branding, the development build indicator and the username', async () => {
+    await renderSignedIn();
     expect(screen.getByText('HyperDrive')).toBeInTheDocument();
     expect(screen.getAllByText('Development build').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Signed in as')).toHaveTextContent('@Test_User');
   });
 
-  it('shows the honest empty state on the overview', () => {
-    render(<App api={pending()} />);
-    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
+  it('keeps the honest empty state and never implies Drive is connected', async () => {
+    await renderSignedIn();
     expect(screen.getByText('No cloud accounts connected.')).toBeInTheDocument();
+    expect(screen.queryByText(/mounted/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/drive connected/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+(\.\d+)?\s?(MB|GB|MiB|GiB)\/s/)).not.toBeInTheDocument();
   });
 
-  it('never claims a mounted drive, files or metrics', () => {
-    render(<App api={pending()} />);
-    expect(screen.queryByText(/mounted/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/\d+(\.\d+)?\s?(MB|GB|MiB|GiB)\/s/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/hit ratio\s*[:=]?\s*\d/i)).not.toBeInTheDocument();
+  it('sign out calls the bridge', async () => {
+    const mock = await renderSignedIn();
+    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(mock.auth.signOut).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('backend status', () => {
-  it('shows "checking" while the health check is in flight', () => {
-    render(<App api={pending()} />);
+  it('shows "checking" while the health check is in flight', async () => {
+    await renderSignedIn('pending');
     expect(screen.getByRole('status')).toHaveTextContent('Backend: checking');
   });
 
   it('shows "connected" when the backend is healthy', async () => {
-    render(<App api={mockApi({ state: 'connected' })} />);
+    await renderSignedIn({ state: 'connected' });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Backend: connected'));
     expect(screen.getByText(/responded to its health check/)).toBeInTheDocument();
   });
 
   it('shows "unavailable" when the backend cannot be reached', async () => {
-    render(<App api={mockApi({ state: 'unavailable', reason: 'unreachable' })} />);
+    await renderSignedIn({ state: 'unavailable', reason: 'unreachable' });
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Backend: unavailable'));
     expect(screen.getByText(/could not be reached/)).toBeInTheDocument();
   });
 
   it('shows "unavailable" when the bridge call rejects instead of crashing', async () => {
-    const api: HyperdriveApi = { checkBackendHealth: vi.fn(() => Promise.reject(new Error('ipc failed'))) };
+    const mock = createMockApi(signedIn());
+    const api: HyperdriveApi = { ...mock.api, checkBackendHealth: vi.fn(() => Promise.reject(new Error('ipc failed'))) };
     render(<App api={api} />);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Backend: unavailable'));
   });
 
-  it('shows "unavailable" when no preload bridge exists', async () => {
-    render(<App api={undefined} />);
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Backend: unavailable'));
-  });
-
   it('re-checks on demand and reflects a recovered backend', async () => {
+    const mock = createMockApi(signedIn());
     const check = vi
       .fn<HyperdriveApi['checkBackendHealth']>()
       .mockResolvedValueOnce({ state: 'unavailable', reason: 'timeout' })
       .mockResolvedValueOnce({ state: 'connected' });
-    render(<App api={{ checkBackendHealth: check }} />);
+    render(<App api={{ ...mock.api, checkBackendHealth: check }} />);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Backend: unavailable'));
 
     await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
@@ -80,8 +81,8 @@ describe('backend status', () => {
 describe('sidebar navigation', () => {
   const nav = () => within(screen.getByRole('navigation', { name: 'Main' }));
 
-  it('lists the five sections and marks Overview as current', () => {
-    render(<App api={pending()} />);
+  it('lists the five sections and marks Overview as current', async () => {
+    await renderSignedIn();
     const labels = nav()
       .getAllByRole('button')
       .map((b) => b.textContent);
@@ -95,7 +96,7 @@ describe('sidebar navigation', () => {
     ['Performance', 'No performance data.'],
     ['Settings', 'No settings to change yet.']
   ])('switches to %s with its own empty state', async (label, emptyText) => {
-    render(<App api={pending()} />);
+    await renderSignedIn();
     await userEvent.click(nav().getByRole('button', { name: label }));
 
     expect(screen.getByRole('heading', { level: 1, name: label })).toBeInTheDocument();
@@ -105,7 +106,7 @@ describe('sidebar navigation', () => {
   });
 
   it('is keyboard operable', async () => {
-    render(<App api={pending()} />);
+    await renderSignedIn();
     const user = userEvent.setup();
     await user.tab();
     expect(nav().getByRole('button', { name: 'Overview' })).toHaveFocus();
@@ -113,15 +114,23 @@ describe('sidebar navigation', () => {
     await user.keyboard('{Enter}');
     expect(screen.getByRole('heading', { level: 1, name: 'Files' })).toBeInTheDocument();
   });
+
+  it('settings shows the account and that sign-in has no Drive access', async () => {
+    await renderSignedIn();
+    await userEvent.click(nav().getByRole('button', { name: 'Settings' }));
+    expect(screen.getByText('@Test_User', { selector: 'dd' })).toBeInTheDocument();
+    expect(screen.getByText(/identity only, no Drive access/)).toBeInTheDocument();
+  });
 });
 
 describe('cloud account connection buttons', () => {
   it.each(['Connect Google Drive', 'Connect Dropbox'])('"%s" is disabled and explains why', async (name) => {
-    render(<App api={pending()} />);
+    await renderSignedIn();
     await userEvent.click(screen.getByRole('button', { name: 'Cloud Accounts' }));
 
     const button = screen.getByRole('button', { name });
     expect(button).toBeDisabled();
     expect(button).toHaveAccessibleDescription(/later development batch/);
+    expect(button).toHaveAccessibleDescription(/does not connect your Google Drive/);
   });
 });

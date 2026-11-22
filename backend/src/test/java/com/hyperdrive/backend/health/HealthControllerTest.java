@@ -10,11 +10,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import com.hyperdrive.backend.security.AuthDisabledSecurityConfig;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonCompareMode;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(HealthController.class)
+@Import(AuthDisabledSecurityConfig.class)
 class HealthControllerTest {
 
     private final MockMvc mockMvc;
@@ -37,14 +40,15 @@ class HealthControllerTest {
 
     @Test
     void rejectsNonGetMethods() throws Exception {
+        // Security denies by default before MVC method matching (403, not 405).
         mockMvc.perform(post("/api/v1/health"))
-                .andExpect(status().isMethodNotAllowed());
+                .andExpect(status().isForbidden());
     }
 
     @Test
     void doesNotServeOtherPaths() throws Exception {
         mockMvc.perform(get("/api/v1/health/details"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isForbidden());
     }
 
     @Test

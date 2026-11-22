@@ -1,0 +1,44 @@
+# Auth-enabled mode: Google sign-in, HyperDrive accounts and device sessions. Requires PostgreSQL.
+# Activate with SPRING_PROFILES_ACTIVE=auth. Required variables default to empty so that a missing
+# one is caught by AuthStartupCheck (Spring keeps unresolved ${...} text literally otherwise).
+
+spring:
+  autoconfigure:
+    # Database auto-configuration back on; only the unused in-memory user store stays off.
+    exclude:
+      - org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
+  datasource:
+    url: ${HYPERDRIVE_DB_URL:jdbc:postgresql://127.0.0.1:5432/hyperdrive}
+    username: ${HYPERDRIVE_DB_USERNAME:hyperdrive}
+    password: ${HYPERDRIVE_DB_PASSWORD:}
+    hikari:
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID:}
+            client-secret: ${GOOGLE_CLIENT_SECRET:}
+            # Identity only. No Drive (or any other API) scopes: connecting Google Drive is a
+            # separate, explicit flow in a later batch.
+            scope: openid,profile,email
+            redirect-uri: ${HYPERDRIVE_PUBLIC_BASE_URL:}/login/oauth2/code/google
+
+server:
+  servlet:
+    session:
+      # The browser session only carries Spring's OAuth authorization request during sign-in.
+      timeout: 10m
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${HYPERDRIVE_SECURE_COOKIES:false}
+
+hyperdrive:
+  auth:
+    enabled: true
+    public-base-url: ${HYPERDRIVE_PUBLIC_BASE_URL:}

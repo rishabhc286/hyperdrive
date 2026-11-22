@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { SafeUser } from '../../shared/auth';
 import type { BackendStatus } from './useBackendHealth';
 
 export const SECTIONS = [
@@ -13,6 +14,7 @@ export type SectionId = (typeof SECTIONS)[number]['id'];
 
 interface SectionViewProps {
   readonly section: SectionId;
+  readonly user: SafeUser;
   readonly backendStatus: BackendStatus;
   readonly onRecheckBackend: () => void;
   readonly onNavigate: (section: SectionId) => void;
@@ -29,18 +31,20 @@ export function SectionView(props: SectionViewProps) {
     case 'performance':
       return <Performance />;
     case 'settings':
-      return <Settings backendStatus={props.backendStatus} />;
+      return <Settings user={props.user} backendStatus={props.backendStatus} />;
   }
 }
 
 const NO_ACCOUNTS = 'No cloud accounts connected.';
 const LATER_BATCH_NOTE =
-  'Account connection is not available yet. Sign-in and cloud connections arrive in a later development batch.';
+  'Connecting cloud storage is not available yet; it arrives in a later development batch. ' +
+  'Signing in to HyperDrive with Google does not connect your Google Drive.';
 
-function Overview({ backendStatus, onRecheckBackend, onNavigate }: SectionViewProps) {
+function Overview({ user, backendStatus, onRecheckBackend, onNavigate }: SectionViewProps) {
   return (
     <section aria-labelledby="overview-title">
       <h1 id="overview-title">Overview</h1>
+      <p className="muted">Signed in as @{user.username}.</p>
       <div className="cards">
         <article className="card" aria-labelledby="backend-card-title">
           <h2 id="backend-card-title">Backend</h2>
@@ -159,13 +163,22 @@ function Performance() {
   );
 }
 
-function Settings({ backendStatus }: { backendStatus: BackendStatus }) {
+function Settings({ user, backendStatus }: { user: SafeUser; backendStatus: BackendStatus }) {
   return (
     <section aria-labelledby="settings-title">
       <h1 id="settings-title">Settings</h1>
       <EmptyState title="No settings to change yet.">
         <p>Cache location, cache size limit and startup behavior will become configurable in later batches.</p>
       </EmptyState>
+      <h2 className="subheading">Account</h2>
+      <dl className="facts">
+        <dt>Username</dt>
+        <dd>@{user.username}</dd>
+        <dt>Name</dt>
+        <dd>{user.displayName ?? "Not provided"}</dd>
+        <dt>Signed in with</dt>
+        <dd>Google (identity only, no Drive access)</dd>
+      </dl>
       <h2 className="subheading">About this build</h2>
       <dl className="facts">
         <dt>Build</dt>
