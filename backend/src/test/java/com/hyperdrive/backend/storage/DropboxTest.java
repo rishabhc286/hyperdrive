@@ -71,11 +71,11 @@ class DropboxTest extends StorageIntegrationTest {
         assertThat(p.get("response_type")).isEqualTo("code");
         assertThat(p.get("client_id")).isEqualTo(FakeDropbox.APP_KEY);
         assertThat(p.get("redirect_uri")).isEqualTo("http://localhost/api/v1/storage-connections/dropbox/callback");
-        assertThat(p.get("scope").split(" ")).containsExactlyInAnyOrder("account_info.read", "files.metadata.read");
+        assertThat(p.get("scope").split(" ")).containsExactlyInAnyOrder("account_info.read", "files.metadata.read", "files.content.read");
         assertThat(p.get("token_access_type")).isEqualTo("offline");
         assertThat(p.get("state")).isNotBlank();
         assertThat(p).doesNotContainKeys("code_challenge", "nonce");
-        assertThat(p.get("scope")).doesNotContain("write", "content");
+        assertThat(p.get("scope")).doesNotContain("write", "sharing", "team");
     }
 
     @Test

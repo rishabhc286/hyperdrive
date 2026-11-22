@@ -68,6 +68,18 @@ export interface TokenSet {
   readonly refreshTokenExpiresAt: number;
 }
 
+/**
+ * A delegated provider access token for one owned account (POST /accounts/{id}/read-credentials).
+ * Main-process only: handed straight to the local agent, never stored or sent to the renderer.
+ */
+export interface ReadCredential {
+  readonly accountId: string;
+  readonly provider: 'GOOGLE_DRIVE' | 'DROPBOX';
+  readonly accessToken: string;
+  readonly accessTokenExpiresAt: string;
+  readonly rootNamespaceId: string | null;
+}
+
 export interface StorageTransactionCreated {
   readonly transactionId: string;
   readonly authorizationUrl: string;
@@ -167,6 +179,24 @@ export class BackendApi {
   async cancelStorageTransaction(accessToken: string, transactionId: string): Promise<ConnectionStatus> {
     const path = `/api/v1/storage-connections/transactions/${encodeURIComponent(transactionId)}/cancel`;
     return parseConnectionStatus(await this.json(await this.send('POST', path, undefined, accessToken, [200])));
+  }
+
+  async issueReadCredential(accessToken: string, accountId: string): Promise<ReadCredential> {
+    const path = `/api/v1/accounts/${encodeURIComponent(accountId)}/read-credentials`;
+    const body = await this.json(await this.send('POST', path, undefined, accessToken, [200]));
+    const { provider, accessToken: token, accessTokenExpiresAt, rootNamespaceId } = body;
+    if (
+      body['accountId'] !== accountId ||
+      (provider !== 'GOOGLE_DRIVE' && provider !== 'DROPBOX') ||
+      typeof token !== 'string' ||
+      !/^[\x21-\x7e]{16,4096}$/.test(token) ||
+      typeof accessTokenExpiresAt !== 'string' ||
+      Number.isNaN(Date.parse(accessTokenExpiresAt)) ||
+      (rootNamespaceId !== null && (typeof rootNamespaceId !== 'string' || !/^[0-9]{1,64}$/.test(rootNamespaceId)))
+    ) {
+      throw new UnexpectedResponseError();
+    }
+    return { accountId, provider, accessToken: token, accessTokenExpiresAt, rootNamespaceId };
   }
 
   async listAccounts(accessToken: string): Promise<ConnectedAccount[]> {

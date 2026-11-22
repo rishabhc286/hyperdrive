@@ -47,7 +47,7 @@ class WebInfrastructureTest {
 
     @Test
     void rateLimitFilterReturns429WithRetryAfterForSensitiveEndpoints() throws Exception {
-        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 2, 2, 2, 2, 2, 2, 2, 2, 2, 100);
+        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 100);
         RateLimitFilter filter = new RateLimitFilter(new RateLimiter(clock, props.window(), 100), props);
 
         int[] statuses = new int[3];
@@ -73,7 +73,7 @@ class WebInfrastructureTest {
 
     @Test
     void storageConnectionStartPollingAndBrowserLegAreRateLimited() throws Exception {
-        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 9, 9, 9, 9, 9, 1, 1, 2, 3, 100);
+        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 9, 9, 9, 9, 9, 1, 1, 2, 3, 4, 100);
         RateLimitFilter filter = new RateLimitFilter(new RateLimiter(clock, props.window(), 100), props);
         record Case(String method, String path, int allowed) {
         }
@@ -81,7 +81,9 @@ class WebInfrastructureTest {
                 new Case("POST", "/api/v1/storage-connections/google/transactions", 1),
                 new Case("GET", "/api/v1/storage-connections/google/authorize/hds_x", 1),
                 new Case("GET", "/api/v1/storage-connections/transactions/abc", 2),
-                new Case("GET", "/api/v1/accounts/abc/files", 3))) {
+                new Case("GET", "/api/v1/accounts/abc/files", 3),
+                // Provider-token delegation has its own, tighter bucket (not the browse one).
+                new Case("POST", "/api/v1/accounts/6f1c2a8e-1b2c-4d3e-8f90-123456789abc/read-credentials", 4))) {
             int ok = 0;
             for (int i = 0; i < 5; i++) {
                 MockHttpServletResponse response = new MockHttpServletResponse();

@@ -15,7 +15,8 @@ import { StorageIpcChannel } from '../shared/storage';
 import { IpcChannel, type BackendHealth } from '../shared/backend-health';
 import { AgentManager } from './agent/agent-manager';
 import { resolveLaunchConfig } from './agent/launch-config';
-import { agentHttpGet, checkJava, isFile, randomSecret, spawnAgent } from './agent/node-runtime';
+import { agentHttpGet, agentHttpPost, checkJava, isFile, randomSecret, spawnAgent } from './agent/node-runtime';
+import { ReadCoordinator } from './storage/read-coordinator';
 import { AuthManager, isTrustedAuthorizeUrl } from './auth/auth-manager';
 import { BackendApi } from './auth/backend-api';
 import { startLoopbackListener } from './auth/loopback';
@@ -30,7 +31,8 @@ import {
   parseFileMetadataPayload,
   parseListFilesPayload,
   parseOnboardingPayload,
-  parseTransactionPayload
+  parseTransactionPayload,
+  parseVerifyReadPayload
 } from './ipc-validation';
 import { isTrustedStorageAuthorizeUrl, StorageManager } from './storage/storage-manager';
 import { isTrustedRendererUrl, type RendererOrigin } from './security';
@@ -125,7 +127,10 @@ function handleTrusted(channel: string, handler: (args: unknown[]) => unknown): 
   });
 }
 
-function registerIpc(auth: AuthManager, storage: StorageManager, agent: AgentManager): void {
+function registerIpc(auth: AuthManager, storage: StorageManager, agent: AgentManager, reads: ReadCoordinator): void {
+  handleTrusted(StorageIpcChannel.verifyFileRead, (args) => {
+    return reads.verifyRead(parseVerifyReadPayload(StorageIpcChannel.verifyFileRead, args));
+  });
   // Agent: status and a bounded restart only. No port, secret, path or spawn parameter crosses IPC.
   handleTrusted(AgentIpcChannel.getStatus, (args) => {
     expectNoArgs(AgentIpcChannel.getStatus, args);
@@ -202,13 +207,32 @@ function registerIpc(auth: AuthManager, storage: StorageManager, agent: AgentMan
   });
 
   auth.onChange((status) => {
-    if (status.phase !== 'signed-in') storage.reset();
+    if (status.phase !== 'signed-in') {
+      storage.reset();
+      // Sign-out / expiry: drop every delegated provider credential held by the agent.
+      void reads.reset();
+    }
     mainWindow?.webContents.send(AuthIpcChannel.statusChanged, status);
   });
 }
 
-function createStorageManager(api: BackendApi | null, auth: AuthManager): StorageManager {
+function createReadCoordinator(api: BackendApi | null, auth: AuthManager, agent: AgentManager): ReadCoordinator {
+  return new ReadCoordinator({
+    agent,
+    issueCredential: async (accountId) => {
+      if (!api) throw new Error('Backend not configured');
+      return auth.withAccessToken((token) => api.issueReadCredential(token, accountId));
+    },
+    getFile: async (accountId, fileId) => {
+      if (!api) throw new Error('Backend not configured');
+      return auth.withAccessToken((token) => api.getFile(token, accountId, fileId));
+    }
+  });
+}
+
+function createStorageManager(api: BackendApi | null, auth: AuthManager, reads?: ReadCoordinator): StorageManager {
   return new StorageManager({
+    onAccountDisconnected: (accountId) => reads?.forgetAccount(accountId) ?? Promise.resolve(),
     api,
     withAccessToken: (call) => auth.withAccessToken(call),
     openExternal: async (url) => {
@@ -235,6 +259,7 @@ function createAgentManager(): AgentManager {
     checkJava,
     spawn: spawnAgent,
     httpGet: agentHttpGet,
+    httpPost: agentHttpPost,
     randomSecret
   });
   manager.onChange((status) => {
@@ -285,7 +310,8 @@ if (!app.requestSingleInstanceLock()) {
     const api = backendUrl.ok ? new BackendApi(backendUrl.url) : null;
     const auth = createAuthManager(api);
     agent = createAgentManager();
-    registerIpc(auth, createStorageManager(api, auth), agent);
+    const reads = createReadCoordinator(api, auth, agent);
+    registerIpc(auth, createStorageManager(api, auth, reads), agent, reads);
     mainWindow = createMainWindow();
     void auth.initialize();
     // The agent is independent of sign-in and of the remote backend; cloud browsing works without it.

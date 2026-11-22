@@ -19,12 +19,17 @@ function setup(route: Route) {
   const fetchImpl = vi.fn((url: URL, init: RequestInit) => Promise.resolve(route(url, init)));
   const api = new BackendApi(new URL(ORIGIN), fetchImpl, 2000);
   const openExternal = vi.fn(() => Promise.resolve());
+  const onAccountDisconnected = vi.fn((accountId: string) => {
+    void accountId;
+    return Promise.resolve();
+  });
   const manager = new StorageManager({
     api,
     withAccessToken: (call) => call('hda_' + 'x'.repeat(43)),
-    openExternal
+    openExternal,
+    onAccountDisconnected
   });
-  return { manager, fetchImpl, openExternal };
+  return { manager, fetchImpl, openExternal, api, onAccountDisconnected };
 }
 
 const account = {
@@ -175,6 +180,60 @@ describe('StorageManager: accounts and files', () => {
     await vi.waitFor(() => expect(release).not.toBeNull());
     expect(await manager.disconnectAccount(ACCOUNT)).toEqual({ ok: true, value: null });
     expect(await listing).toEqual({ ok: false, error: 'cancelled' });
+  });
+
+  it('drops delegated read credentials of a disconnected account even if the backend call fails', async () => {
+    const ok = setup(() => new Response(null, { status: 204 }));
+    await ok.manager.disconnectAccount(ACCOUNT);
+    expect(ok.onAccountDisconnected).toHaveBeenCalledWith(ACCOUNT);
+    const failing = setup(() => json(503, { code: 'unavailable' }));
+    await failing.manager.disconnectAccount(ACCOUNT);
+    expect(failing.onAccountDisconnected).toHaveBeenCalledWith(ACCOUNT);
+  });
+
+  it('parses the content-read grant strictly', async () => {
+    const { manager } = setup(() =>
+      json(200, { items: [account, { ...account, id: '7a1c2a8e-1b2c-4d3e-8f90-123456789abc', contentReadGranted: true }] })
+    );
+    const result = await manager.listAccounts();
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.map((a) => a.contentReadGranted)).toEqual([false, true]);
+  });
+
+  it('issues a read credential with POST, no-store semantics and strict parsing', async () => {
+    const good = {
+      accountId: ACCOUNT,
+      provider: 'GOOGLE_DRIVE',
+      accessToken: 'ya29.read-credential-test-0123456789',
+      accessTokenExpiresAt: '2026-11-22T11:00:00Z',
+      rootNamespaceId: null,
+      issuedAt: '2026-11-22T10:00:00Z'
+    };
+    const t = setup(() => json(200, good));
+    const credential = await t.api.issueReadCredential('hda_' + 'x'.repeat(43), ACCOUNT);
+    expect(credential).toEqual({
+      accountId: ACCOUNT,
+      provider: 'GOOGLE_DRIVE',
+      accessToken: good.accessToken,
+      accessTokenExpiresAt: good.accessTokenExpiresAt,
+      rootNamespaceId: null
+    });
+    const [url, init] = t.fetchImpl.mock.calls[0]!;
+    expect(url.pathname).toBe(`/api/v1/accounts/${ACCOUNT}/read-credentials`);
+    expect(init.method).toBe('POST');
+    expect(url.search).toBe('');
+
+    for (const bad of [
+      { ...good, accountId: '7a1c2a8e-1b2c-4d3e-8f90-123456789abc' },
+      { ...good, provider: 'ONEDRIVE' },
+      { ...good, accessToken: 'short' },
+      { ...good, accessToken: 'has space in the token value' },
+      { ...good, accessTokenExpiresAt: 'tomorrow' },
+      { ...good, provider: 'DROPBOX', rootNamespaceId: 'x"}' }
+    ]) {
+      const u = setup(() => json(200, bad));
+      await expect(u.api.issueReadCredential('hda_' + 'x'.repeat(43), ACCOUNT)).rejects.toThrow();
+    }
   });
 
   it('maps backend failures to coarse error codes', () => {

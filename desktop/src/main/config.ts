@@ -5,6 +5,7 @@
 
 export const DEFAULT_BACKEND_URL = 'http://127.0.0.1:18080';
 export const BACKEND_URL_ENV = 'HYPERDRIVE_BACKEND_URL';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 export type BackendUrlResult =
   | { readonly ok: true; readonly url: URL }
@@ -26,6 +27,11 @@ export function resolveBackendUrl(env: NodeJS.ProcessEnv): BackendUrlResult {
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return { ok: false, error: `${BACKEND_URL_ENV} must use http or https` };
+  }
+  // Provider access tokens are delegated over this connection (Batch 6): plain http is allowed only
+  // for an explicit loopback development backend. TLS certificate validation is never disabled.
+  if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
+    return { ok: false, error: `${BACKEND_URL_ENV} must use https unless it points at this machine (127.0.0.1 or localhost)` };
   }
   if (url.username || url.password) {
     return { ok: false, error: `${BACKEND_URL_ENV} must not contain credentials` };

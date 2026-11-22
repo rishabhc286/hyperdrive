@@ -56,7 +56,7 @@ stable `account_id`, never on email. The email is stored only if Dropbox marks i
 | --- | --- | --- |
 | `account_info.read` | **Requested** | Identify the connected account (`account_id`, name, verified email) and its root namespace |
 | `files.metadata.read` | **Requested** | List folders and read file/folder metadata |
-| `files.content.read` | **Deferred** | Needed only when HyperDrive reads file contents (the planned streaming batch). Not requested until then; existing connections will then need a reconnect to add it. |
+| `files.content.read` | **Requested since Batch 6** | Bounded byte-range reads by the local agent. Connections made before Batch 6 don't have it: they keep browsing, show "can't read file contents" and need **Reconnect** before reads work. Enable it in the app's Permissions tab. |
 | Any `*.write`, `sharing.*`, `team_*` | **Never requested** | HyperDrive is read-only |
 
 ### Offline access
@@ -285,3 +285,43 @@ Not executed yet. Run it once a real app exists:
     root, labeled "(team space)".
 12. **Logs:** search the backend log for tokens, emails, file names or the app secret. There
     should be none.
+
+## Content reads (Batch 6)
+
+How the agent reads ranges is described in
+[local-agent.md](local-agent.md#bounded-read-contract-batch-6); the delegation trade-offs are in
+[ADR 0002](adr/0002-provider-access-token-delegation.md).
+
+- **Endpoint:** `POST https://content.dropboxapi.com/2/files/download`, with `Dropbox-API-Arg
+  {"path": "id:…"}`, or `{"path": "rev:<rev>"}` when the listed revision is known (pinned).
+- **Root:** `Dropbox-API-Path-Root {".tag":"root","root":"<root namespace>"}`, the same root as
+  browsing, so team-space files resolve the same way.
+- **Range:** `Range: bytes=a-b`, with `206` and `Content-Range` expected.
+  - A whole-file `200` is accepted only when the whole (≤ 4 MiB) file was asked for.
+  - The `Dropbox-API-Result` `rev` and `size`, when present, must match the listing.
+- **Errors:** 409 `path/not_found` → not found; `restricted_content`, `unsupported_file` and
+  `not_file` → unsupported; `missing_scope` → reconnect for content permission; 401 → one
+  re-delegation; 429 → `Retry-After` honored up to 2 s, then reported.
+- **Not verified live:** whether Dropbox sends `Dropbox-API-Result` on 206 responses, and its
+  exact error bodies, are inferred from the API spec and tested only against a local mock.
+
+### Manual verification: content reads (requires a Dropbox app)
+
+Not executed yet.
+
+1. **Permission:** enable `files.content.read` in the app's Permissions tab. A Dropbox account
+   connected before Batch 6 shows "can't read file contents" in Cloud Accounts. **Reconnect** it;
+   the consent screen now lists file-content read access, and the note disappears.
+2. **Read:** in Files, open a Dropbox folder and click an ordinary file (> 4 MiB if possible).
+   The **Verify file read** panel opens. Run it with offset 0 and length 4,194,304.
+   - Expect success, 4,194,304 bytes, "Pinned to the listed revision" and a SHA-256.
+   - Compare it with `Get-FileHash -Algorithm SHA256` over the first 4 MiB of a downloaded copy.
+3. **Final range:** an offset 100 bytes before the end returns 100 bytes and "reached end of file".
+4. **Changed file:** edit the file in Dropbox's web UI without refreshing the listing, then
+   verify again. Expect "changed since it was listed" (the old `rev` is either still served
+   pinned, or reported not found; record which).
+5. **Paper/cloud docs:** no Verify panel is offered.
+6. **Disconnect:** disconnect the account and check the agent log for "Cleared 1 delegated
+   credential(s) for account …".
+7. **Logs:** search the backend, desktop and agent logs for `sl.`, `Bearer` and file names.
+   There should be none.

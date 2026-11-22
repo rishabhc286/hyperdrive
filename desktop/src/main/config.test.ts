@@ -20,6 +20,8 @@ describe('resolveBackendUrl', () => {
     ['not a URL', 'not a url'],
     ['a non-http scheme', 'file:///C:/Windows'],
     ['embedded credentials', 'http://user:pass@127.0.0.1:18080'],
+    ['plain http to a remote host', 'http://hyperdrive.example'],
+    ['plain http to a LAN address', 'http://192.168.1.10:18080'],
     ['a path', 'http://127.0.0.1:18080/api'],
     ['a query string', 'http://127.0.0.1:18080/?x=1'],
     ['a fragment', 'http://127.0.0.1:18080/#x']

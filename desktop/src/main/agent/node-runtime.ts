@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import type { AgentChild, AgentPath } from './agent-manager';
+import type { AgentChild, AgentPath, AgentPostPath, AgentPostResponse } from './agent-manager';
 import { parseJavaMajor } from './java-discovery';
 
 /** Real implementations of the AgentManager's process and network dependencies. */
@@ -59,6 +59,59 @@ export async function agentHttpGet(
   const text = await response.text();
   if (text.length > 16 * 1024) throw new Error('Agent response too large');
   return { status: response.status, body: parseJson(text) };
+}
+
+/** 4 MiB of file bytes plus headroom; anything larger is cut off and rejected. */
+const MAX_POST_RESPONSE = 4 * 1024 * 1024 + 64 * 1024;
+
+/**
+ * Authenticated JSON POST to the agent (127.0.0.1 + validated port only). The response body is read
+ * with a hard cap; bytes stay in the main process.
+ */
+export async function agentHttpPost(
+  port: number,
+  path: AgentPostPath,
+  secret: string,
+  body: unknown,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<AgentPostResponse> {
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid agent port');
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    redirect: 'error',
+    cache: 'no-store',
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout
+  });
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, name) => {
+    const n = name.toLowerCase();
+    if (n === 'content-type' || n.startsWith('x-hyperdrive-')) headers[n] = value;
+  });
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = response.body?.getReader();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_POST_RESPONSE) {
+      await reader.cancel();
+      throw new Error('Agent response too large');
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+    chunk.fill(0);
+  }
+  return { status: response.status, headers, body: out };
 }
 
 function parseJson(text: string): unknown {

@@ -54,16 +54,29 @@ The launch website is a separate project and is not part of this repository.
   - Restarts are bounded, and shutdown targets only the agent process the app started.
   - Status appears on the Overview and in Settings. Details: [docs/local-agent.md](docs/local-agent.md).
 
+- **Batch 6 (bounded provider reads through the agent):**
+  - The backend delegates a short-lived provider **access** token for one owned account to the
+    agent, through the desktop main process (`POST /api/v1/accounts/{id}/read-credentials`).
+    Refresh tokens never leave the backend.
+  - The agent reads **one bounded byte range** (at most 4 MiB = 4,194,304 bytes) **directly from
+    Google Drive or Dropbox**. The backend never proxies file contents.
+  - A **Verify file read** diagnostic in Files shows only bytes requested and received, elapsed
+    time and a SHA-256 digest. No bytes reach the UI or disk. It is not opening, playback,
+    caching or a mounted drive.
+  - New Dropbox connections request `files.content.read`; older Dropbox connections must be
+    reconnected before reads work.
+  - Trade-offs and honest limits: [ADR 0002](docs/adr/0002-provider-access-token-delegation.md).
+
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
 [docs/google-drive.md](docs/google-drive.md) · [docs/dropbox.md](docs/dropbox.md) ·
 [docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
 
 ## Not implemented yet
 
-- Google Shared drives / "Shared with me", opening or downloading files, exporting native
+- Google Shared drives / "Shared with me", opening or downloading whole files, exporting native
   documents, following shortcuts or links, OneDrive.
-- The agent's data plane: provider reads, range reads, the chunk cache and metrics. The agent
-  only reports status today; see [ADR 0001](docs/adr/0001-local-agent-transport-and-content-boundary.md).
+- The chunk cache, LRU eviction, prefetching, playback and metrics. Batch 6 reads are single
+  bounded ranges for diagnostics only, and nothing is cached.
 - The WinFsp virtual drive (`vfs/`).
 - Agent packaging: no bundled Java runtime and no installer. Development uses your JDK 21+.
 - Google OAuth verification: `drive.readonly` is a restricted scope. HyperDrive is unverified

@@ -80,7 +80,8 @@ export function createMockStorage() {
     cancelConnection: vi.fn<StorageApi['cancelConnection']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
     listFiles: vi.fn<StorageApi['listFiles']>(() => Promise.resolve({ ok: true, value: { items: [], continuation: null } })),
     getFileMetadata: vi.fn<StorageApi['getFileMetadata']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
-    disconnectAccount: vi.fn<StorageApi['disconnectAccount']>(() => Promise.resolve({ ok: true, value: null }))
+    disconnectAccount: vi.fn<StorageApi['disconnectAccount']>(() => Promise.resolve({ ok: true, value: null })),
+    verifyFileRead: vi.fn<StorageApi['verifyFileRead']>(() => Promise.resolve({ ok: false, error: 'agent-unavailable' }))
   };
 }
 
@@ -88,7 +89,7 @@ export const AGENT_READY: AgentStatus = {
   state: 'ready',
   agentVersion: '0.1.0-SNAPSHOT',
   uptimeMillis: 125_000,
-  capabilities: { providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false },
+  capabilities: { providerReads: true, rangeReads: true, chunkCache: false, virtualDrive: false },
   error: null,
   autoRestartsRemaining: 2
 };

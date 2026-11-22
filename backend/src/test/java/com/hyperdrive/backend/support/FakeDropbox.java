@@ -32,7 +32,10 @@ public final class FakeDropbox {
 
     public static final String APP_KEY = "test-dropbox-app-key";
     public static final String APP_SECRET = "test-dropbox-app-secret";
+    /** Pre-Batch-6 grant (no content read). */
     public static final String SCOPES = "account_info.read files.metadata.read";
+    /** Batch 6 grant: includes files.content.read. */
+    public static final String SCOPES_WITH_CONTENT = "account_info.read files.content.read files.metadata.read";
 
     /** What the user authorized for one code. */
     public record Account(String accountId, String displayName, String email, boolean emailVerified, String rootTag,

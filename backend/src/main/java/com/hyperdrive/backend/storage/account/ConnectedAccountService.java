@@ -28,8 +28,12 @@ import org.springframework.stereotype.Service;
 @ConditionalOnAuthEnabled
 public class ConnectedAccountService {
 
-    /** Internal view used by browsing: includes the provider's root information. */
-    public record OwnedAccount(UUID id, UUID userId, StorageProvider provider, Status status, AccountRoot root) {
+    /** Internal view used by browsing and delegation: includes root information and granted scopes. */
+    public record OwnedAccount(UUID id, UUID userId, StorageProvider provider, Status status, AccountRoot root,
+            Set<String> grantedScopes) {
+        public boolean canReadContent() {
+            return grantedScopes.contains(provider.contentReadScope());
+        }
     }
 
     public record Upserted(UUID accountId, boolean reconnected) {
@@ -64,13 +68,15 @@ public class ConnectedAccountService {
 
     public Optional<OwnedAccount> findOwned(UUID userId, UUID accountId) {
         return jdbc.sql("""
-                SELECT id, user_id, provider, status, root_folder_id, root_namespace_id FROM connected_accounts
+                SELECT id, user_id, provider, status, root_folder_id, root_namespace_id, granted_scopes FROM connected_accounts
                 WHERE id = :id AND user_id = :userId
                 """)
                 .param("id", accountId).param("userId", userId)
                 .query((rs, n) -> new OwnedAccount(rs.getObject("id", UUID.class), rs.getObject("user_id", UUID.class),
                         StorageProvider.valueOf(rs.getString("provider")), Status.valueOf(rs.getString("status")),
-                        new AccountRoot(rs.getString("root_folder_id"), rs.getString("root_namespace_id"))))
+                        new AccountRoot(rs.getString("root_folder_id"), rs.getString("root_namespace_id")),
+                        Set.of(rs.getString("granted_scopes").isBlank() ? new String[0]
+                                : rs.getString("granted_scopes").split(" "))))
                 .optional();
     }
 
@@ -146,18 +152,21 @@ public class ConnectedAccountService {
 
     private static ConnectedAccount map(ResultSet rs) throws SQLException {
         String scopes = rs.getString("granted_scopes");
+        StorageProvider provider = StorageProvider.valueOf(rs.getString("provider"));
+        List<String> scopeList = scopes.isBlank() ? List.of() : Arrays.asList(scopes.split(" "));
         return new ConnectedAccount(
                 rs.getObject("id", UUID.class),
-                StorageProvider.valueOf(rs.getString("provider")),
+                provider,
                 rs.getString("display_name"),
                 rs.getString("provider_email"),
                 Status.valueOf(rs.getString("status")),
                 rs.getString("root_type"),
-                scopes.isBlank() ? List.of() : Arrays.asList(scopes.split(" ")),
+                scopeList,
                 instant(rs, "connected_at"),
                 instant(rs, "updated_at"),
                 instant(rs, "last_success_at"),
-                rs.getString("last_error_code"));
+                rs.getString("last_error_code"),
+                scopeList.contains(provider.contentReadScope()));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

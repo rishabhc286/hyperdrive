@@ -9,7 +9,8 @@ import {
   parseFileMetadataPayload,
   parseListFilesPayload,
   parseOnboardingPayload,
-  parseTransactionPayload
+  parseTransactionPayload,
+  parseVerifyReadPayload
 } from './ipc-validation';
 
 describe('IPC payload validation', () => {
@@ -85,6 +86,26 @@ describe('storage IPC payload validation', () => {
     for (const bad of [[{ provider: 'ONEDRIVE' }], [{ provider: 'dropbox' }], [{}], [{ provider: 'DROPBOX', url: 'x' }], []]) {
       expect(() => parseBeginConnectionPayload('c', bad as unknown[])).toThrow(InvalidIpcPayloadError);
     }
+  });
+
+  it('accepts a bounded verify-read request and rejects everything else', () => {
+    const ok = { accountId: ACCOUNT, fileId: 'id:abc', offset: 0, length: 4 * 1024 * 1024 };
+    expect(parseVerifyReadPayload('c', [ok])).toEqual(ok);
+    for (const bad of [
+      { ...ok, length: 0 },
+      { ...ok, length: 4 * 1024 * 1024 + 1 },
+      { ...ok, offset: -1 },
+      { ...ok, offset: 0.5 },
+      { ...ok, offset: Number.MAX_SAFE_INTEGER + 2 },
+      { ...ok, offset: '0' },
+      { ...ok, fileId: 'https://evil.example/file' },
+      { ...ok, accountId: 'x' },
+      { ...ok, url: 'https://evil.example' },
+      { ...ok, accessToken: 'ya29.x' }
+    ]) {
+      expect(() => parseVerifyReadPayload('c', [bad])).toThrow(InvalidIpcPayloadError);
+    }
+    expect(() => parseVerifyReadPayload('c', [ok, ok])).toThrow(InvalidIpcPayloadError);
   });
 
   it('rejects malformed transaction, account and file payloads', () => {

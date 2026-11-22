@@ -67,7 +67,10 @@ class AgentTest {
             assertThat(status.get("instanceId").asString()).isEqualTo(h.handshake().get("instanceId").asString());
             JsonNode caps = status.get("capabilities");
             assertThat(caps.propertyNames()).containsExactlyInAnyOrder("providerReads", "rangeReads", "chunkCache", "virtualDrive");
-            caps.forEach(c -> assertThat(c.asBoolean()).isFalse());
+            assertThat(caps.get("providerReads").asBoolean()).isTrue();
+            assertThat(caps.get("rangeReads").asBoolean()).isTrue();
+            assertThat(caps.get("chunkCache").asBoolean()).isFalse();
+            assertThat(caps.get("virtualDrive").asBoolean()).isFalse();
             assertThat(status.get("lastStartupError").isNull()).isTrue();
             assertThat(status.toString()).doesNotContain(h.secret, temp.toString(), "dataDir", "env", "path");
         }

@@ -100,8 +100,9 @@ public class StorageConfig {
                     .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
                     .redirectUri(auth.publicBaseUrl().toString().replaceAll("/$", "")
                             + StorageBrowserController.callbackPath(StorageProvider.DROPBOX))
-                    // Identity + metadata only. Content read and every write scope are not requested.
-                    .scope(DropboxConnectionCompleter.SCOPE_ACCOUNT_INFO, DropboxConnectionCompleter.SCOPE_METADATA)
+                    // Identity, metadata and (Batch 6) content read. No write, sharing or team scopes.
+                    .scope(DropboxConnectionCompleter.SCOPE_ACCOUNT_INFO, DropboxConnectionCompleter.SCOPE_METADATA,
+                            DropboxConnectionCompleter.SCOPE_CONTENT)
                     .authorizationUri(dropbox.authorizationUri().toString())
                     .tokenUri(dropbox.tokenUri().toString())
                     .build();

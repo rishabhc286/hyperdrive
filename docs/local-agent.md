@@ -59,12 +59,18 @@ npm run dev                # or: npm run build; npm start
 
 ## Local API (protocol version 1)
 
-All endpoints are `GET`, require the bearer secret, and return `Cache-Control: no-store`.
+Every endpoint requires the bearer secret and returns `Cache-Control: no-store`.
 
 | Endpoint | Response |
 | --- | --- |
-| `/local/v1/health` | `{"status":"UP"}` |
-| `/local/v1/status` | `protocolVersion`, `agentVersion`, `instanceId`, `readiness` (`READY`), `startedAt`, `uptimeMillis`, `capabilities` (all `false`), `lastStartupError` (`null`) |
+| `GET /local/v1/health` | `{"status":"UP"}` |
+| `GET /local/v1/status` | `protocolVersion`, `agentVersion`, `instanceId`, `readiness` (`READY`), `startedAt`, `uptimeMillis`, `capabilities` (`providerReads`/`rangeReads` `true`, `chunkCache`/`virtualDrive` `false`), `lastStartupError` (`null`) |
+| `POST /local/v1/credentials` | Install a delegated credential: `{provider, accountId, accessToken, providerExpiresAt, rootNamespaceId?}` → `201 {handle, retentionExpiresAt, providerExpiresAt}` |
+| `POST /local/v1/credentials/clear` | `{accountId?}` (omit for all) → `{cleared}`; cancels that account's in-flight reads |
+| `POST /local/v1/reads` | One bounded read (below) → `200 application/octet-stream`, or a JSON `{code}` error |
+
+POST bodies must be `application/json`, have a `Content-Length` of at most 16 KiB, and contain
+only the listed fields. A refresh token or any other unknown field is rejected with `400`.
 
 **Rejected requests:**
 
@@ -73,13 +79,71 @@ All endpoints are `GET`, require the bearer secret, and return `Cache-Control: n
 | Missing or wrong secret | `401` |
 | `Host` header other than `127.0.0.1:<port>` | `403` |
 | Any `Origin` header | `403` |
-| Method other than GET | `405` |
-| A request body | `400` |
+| Wrong method for a path | `405` |
+| A body on GET, a non-JSON or oversized POST body, chunked POST | `400` |
 | A query string | `400` |
 | Any other path | `404` |
 
-**What the API never offers:** shutdown, configuration writes, files, environment, paths,
-proxying or shell execution.
+**What the API never offers:** shutdown, configuration writes, local files, environment, paths,
+arbitrary URLs or proxying, token read-back, or shell execution. The provider endpoints are
+fixed in code; only in-process tests can substitute them.
+
+## Bounded read contract (Batch 6)
+
+This is an **application contract**, not HTTP `Range` passthrough.
+
+**Request** `POST /local/v1/reads`:
+`{ handle, fileId, offset, length, expectedSize, expectedRevision? }`
+- `handle`: the opaque `hdh_…` value from `/credentials`, which selects the account and provider.
+- `fileId`: a Drive ID (`[A-Za-z0-9_-]{1,256}`) or a Dropbox `id:…`. Never a path or URL.
+- `offset ≥ 0`, `0 < length ≤ 4,194,304`. `offset + length` overflow is rejected.
+- `expectedSize`: the size from the listing. `expectedRevision`: Drive `headRevisionId` or
+  Dropbox `rev`.
+
+**Semantics:**
+- **Clamping:** the agent requests `Range: bytes=offset-min(offset+length, expectedSize)-1`. A
+  range that runs past EOF is clamped to the file end (a short read, `X-HyperDrive-EOF: true`).
+- **At EOF:** `offset ≥ expectedSize`, or a zero-byte file, returns **0 bytes** with `EOF: true`
+  and makes **no provider call**. HTTP would answer 416; this contract doesn't.
+- **Success:** `200 application/octet-stream`, with exactly `X-HyperDrive-Read-Length` bytes plus
+  `X-HyperDrive-Read-Offset`, `-EOF`, `-Revision-Pinned` and `-Revision` (when known).
+  Never base64 or JSON.
+- **Changed file:** a provider-reported total size different from `expectedSize`, a 416 inside
+  the expected size, or a different Dropbox `rev` all return `409 file_changed`. Partial data is
+  never returned.
+- **Revision pinning:**
+  - Dropbox reads with `expectedRevision` use `rev:<rev>` and are pinned. A revision that no
+    longer exists returns `not_found`, never the current content.
+  - Google ranged reads are **not** pinned: Drive serves its current content, and only the size is
+    checked.
+  - No read is labeled safe for caching yet.
+- **Cancellation:** clearing the credential (logout, disconnect, shutdown) cancels its in-flight
+  reads (`cancelled`).
+
+**Provider transport:**
+- **Connection:** fixed HTTPS endpoints, redirects **never followed** (`redirect_refused`, so
+  `Authorization` can't leak to another origin), HTTP/1.1, `Accept-Encoding: identity`
+  (compressed bodies rejected), and a 5 s connect and 30 s request timeout.
+- **Status 206:** `Content-Range` must be exactly `bytes start-end/total` for the asked range,
+  and the body must be exactly that long (`truncated_response` / `invalid_provider_response`).
+  Bodies are read with a hard cap even without `Content-Length`.
+- **Status 200 (Range ignored):** accepted **only** when the request covered the whole file (offset 0
+  through EOF, so at most 4 MiB) and `Content-Length` matches. Otherwise the connection is closed
+  and the read fails with `range_not_supported`. The agent never downloads a whole large file.
+- **Errors:**
+  - `401` → `credential_rejected`; Dropbox `missing_scope` → `permission_missing`.
+  - Google `fileNotDownloadable` → `unsupported_file`; other `403`s → `forbidden` (a 403 does not
+    mean expiry).
+  - `404` or Dropbox `path/not_found` → `not_found`.
+  - `429` and Google rate-limit 403s → retried, then `rate_limited` with `retryAfterSeconds`.
+  - `5xx` → retried, then `unavailable`; a timeout → `timeout`.
+  - Retries: at most 3 attempts, waits capped at 2 s.
+
+**Limits:**
+- At most 8 concurrent reads in total and 4 per account, beyond which the read fails with
+  `too_busy`.
+- At most 32 credentials, retained ≤ 20 min and never past the provider expiry minus 15 s.
+- No disk persistence of credentials or bytes.
 
 ## Lifecycle as seen by the app
 
@@ -156,7 +220,7 @@ proxying or shell execution.
 
 ## Not implemented
 
-- Provider reads, range reads, chunk cache and cache encryption.
+- The chunk cache and cache encryption, prefetching, full-file downloads and playback.
 - Writes and staging.
 - WinFsp and drive mounting.
 - A Windows service, auto-start at login, an installer, and a bundled JRE.

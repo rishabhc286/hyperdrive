@@ -45,7 +45,15 @@ const storage: StorageApi = {
       fileId: String(input.fileId)
     }),
   disconnectAccount: (input) =>
-    ipcRenderer.invoke(StorageIpcChannel.disconnectAccount, { accountId: String(input.accountId) })
+    ipcRenderer.invoke(StorageIpcChannel.disconnectAccount, { accountId: String(input.accountId) }),
+  // Returns only digest/timing facts; the bytes never cross the bridge.
+  verifyFileRead: (input) =>
+    ipcRenderer.invoke(StorageIpcChannel.verifyFileRead, {
+      accountId: String(input.accountId),
+      fileId: String(input.fileId),
+      offset: Number(input.offset),
+      length: Number(input.length)
+    })
 };
 
 // Status and restart only; the renderer never learns the agent's port or secret.

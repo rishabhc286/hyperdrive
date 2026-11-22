@@ -12,6 +12,8 @@ import java.util.UUID;
  * @param email    provider email, only if the provider marked it verified; may be null
  * @param rootType Dropbox only: {@code USER} (personal or member folder root) or {@code TEAM}
  *                 (team space root); null for Google Drive
+ * @param contentReadGranted whether the stored grant includes the provider's content-read scope;
+ *                 false for Dropbox connections made before Batch 6 (they must reconnect to read files)
  */
 public record ConnectedAccount(
         UUID id,
@@ -24,7 +26,8 @@ public record ConnectedAccount(
         Instant connectedAt,
         Instant updatedAt,
         Instant lastSuccessAt,
-        String lastErrorCode) {
+        String lastErrorCode,
+        boolean contentReadGranted) {
 
     public enum Status {
         CONNECTED,

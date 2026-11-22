@@ -25,6 +25,8 @@ export interface StorageManagerDeps {
   readonly withAccessToken: <T>(call: (accessToken: string) => Promise<T>) => Promise<T>;
   /** Opens a URL in the system browser. Only called with a validated storage authorize URL. */
   readonly openExternal: (url: string) => Promise<void>;
+  /** Called after a disconnect attempt so delegated read credentials for that account are dropped. */
+  readonly onAccountDisconnected?: (accountId: string) => Promise<void>;
 }
 
 /** Remember at most this many connection attempts started by this app run. */
@@ -94,6 +96,8 @@ export class StorageManager {
     for (const controller of this.inFlight.get(accountId) ?? []) controller.abort();
     this.inFlight.delete(accountId);
     const result = await this.run((api, token) => api.disconnectAccount(token, accountId));
+    // Drop any delegated credential for this account in the agent, whatever the backend answered.
+    await this.deps.onAccountDisconnected?.(accountId).catch(() => undefined);
     return result.ok ? { ok: true, value: null } : result;
   }
 

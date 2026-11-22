@@ -336,7 +336,7 @@ class StorageConnectionFlowTest extends StorageIntegrationTest {
         UUID accountId = storage.connect(token, DRIVE);
         JsonNode account = storage.apiJson(token, "/api/v1/accounts/" + accountId);
         assertThat(account.propertyNames()).containsExactlyInAnyOrder("id", "provider", "displayName", "email", "status", "rootType",
-                "grantedScopes", "connectedAt", "updatedAt", "lastSuccessAt", "lastErrorCode");
+                "grantedScopes", "connectedAt", "updatedAt", "lastSuccessAt", "lastErrorCode", "contentReadGranted");
         assertThat(account.toString()).doesNotContain("drive-sub-1", "refresh", "access_token");
     }
 }

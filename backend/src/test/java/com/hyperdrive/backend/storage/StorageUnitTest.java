@@ -215,6 +215,14 @@ class StorageUnitTest {
         assertThat(blocked.toString()).doesNotContain("x.pdf");
 
         assertThat(GoogleDriveBrowserTestAccess.map(json.readTree("{\"id\":\"bad id\"}"))).isNull();
+
+        ProviderFile withRevision = GoogleDriveBrowserTestAccess.map(json.readTree(
+                "{\"id\":\"f2\",\"name\":\"a.bin\",\"mimeType\":\"application/octet-stream\",\"size\":\"3\","
+                        + "\"headRevisionId\":\"0B1rev\",\"md5Checksum\":\"900150983cd24fb0d6963f7d28e17f72\","
+                        + "\"capabilities\":{\"canDownload\":true}}"));
+        assertThat(withRevision.providerRevision()).isEqualTo("0B1rev");
+        assertThat(withRevision.contentHash()).isEqualTo("900150983cd24fb0d6963f7d28e17f72");
+        assertThat(withRevision.contentHashAlgorithm()).isEqualTo("md5");
     }
 
     @Test

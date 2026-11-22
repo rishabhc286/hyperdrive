@@ -15,7 +15,8 @@ const DRIVE: ConnectedAccount = {
   rootType: null,
   connectedAt: '2026-11-22T10:00:00Z',
   lastSuccessAt: null,
-  lastErrorCode: null
+  lastErrorCode: null,
+  contentReadGranted: true
 };
 const BOX: ConnectedAccount = {
   ...DRIVE,
@@ -193,6 +194,16 @@ describe('Cloud Accounts: connected accounts', () => {
       m.storage.listAccounts.mockResolvedValue({ ok: true, value: [{ ...BOX, status: 'NEEDS_RECONNECT' }] })
     );
     expect(await screen.findByText('Needs reconnect')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect Dropbox box.owner@example.com' }));
+    expect(mock.storage.beginConnection).toHaveBeenCalledWith({ provider: 'DROPBOX' });
+  });
+
+  it('explains a connection without content permission and offers reconnect', async () => {
+    const mock = await openAccounts((m) =>
+      m.storage.listAccounts.mockResolvedValue({ ok: true, value: [DRIVE, { ...BOX, contentReadGranted: false }] })
+    );
+    expect(await screen.findByText(/can’t read file contents. Reconnect to grant read access/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reconnect Google Drive drive.owner@example.com' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Reconnect Dropbox box.owner@example.com' }));
     expect(mock.storage.beginConnection).toHaveBeenCalledWith({ provider: 'DROPBOX' });
   });

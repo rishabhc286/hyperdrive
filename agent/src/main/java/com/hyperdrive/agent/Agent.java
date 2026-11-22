@@ -16,6 +16,12 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import com.hyperdrive.agent.read.CredentialRegistry;
+import com.hyperdrive.agent.read.ProviderEndpoints;
+import com.hyperdrive.agent.read.ProviderReader;
+import com.hyperdrive.agent.read.ReadException;
+import com.hyperdrive.agent.read.ReadService;
+import java.time.format.DateTimeParseException;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -54,14 +60,30 @@ public final class Agent {
     private volatile String shutdownReason = "unknown";
     private volatile Instant startedAt;
     private volatile int port = -1;
+    private final ProviderEndpoints endpoints;
+    private final ProviderReader.Sleeper sleeper;
+    private final Duration providerRequestTimeout;
+    private final CredentialRegistry credentials;
+    private ReadService reads;
 
     public Agent(InputStream stdin, PrintStream stdout, PrintStream stderr, Clock clock, Duration bootstrapTimeout) {
+        this(stdin, stdout, stderr, clock, bootstrapTimeout, ProviderEndpoints.PRODUCTION, d -> Thread.sleep(d),
+                Duration.ofSeconds(30));
+    }
+
+    /** Endpoint injection exists only for in-process tests; the production entry point can't set it. */
+    Agent(InputStream stdin, PrintStream stdout, PrintStream stderr, Clock clock, Duration bootstrapTimeout,
+            ProviderEndpoints endpoints, ProviderReader.Sleeper sleeper, Duration providerRequestTimeout) {
         this.stdin = stdin;
         this.stdout = stdout;
         this.clock = clock;
         this.bootstrapTimeout = bootstrapTimeout;
         this.log = new AgentLog(stderr, clock);
         this.version = loadVersion();
+        this.endpoints = endpoints;
+        this.sleeper = sleeper;
+        this.providerRequestTimeout = providerRequestTimeout;
+        this.credentials = new CredentialRegistry(clock);
     }
 
     /** Runs until shutdown; returns the process exit code. */
@@ -101,7 +123,15 @@ public final class Agent {
         try (lock) {
             startedAt = clock.instant();
             try {
-                server = LocalApiServer.start(bootstrap.secret(), this::health, this::status, log);
+                reads = new ReadService(credentials, new ProviderReader(endpoints, Duration.ofSeconds(5),
+                        providerRequestTimeout, sleeper));
+                server = LocalApiServer.start(bootstrap.secret(),
+                        Map.of("/local/v1/health", () -> new LocalApiServer.Response.Json(200, health()),
+                                "/local/v1/status", () -> new LocalApiServer.Response.Json(200, status())),
+                        Map.of("/local/v1/credentials", this::installCredential,
+                                "/local/v1/credentials/clear", this::clearCredentials,
+                                "/local/v1/reads", this::read),
+                        log);
             } catch (IOException e) {
                 log.error("Local API could not bind to 127.0.0.1: " + e.getClass().getSimpleName());
                 emit(Map.of("type", "error", "code", "bind_failed"));
@@ -122,6 +152,10 @@ public final class Agent {
 
             awaitShutdown();
             log.info("Agent shutting down (" + shutdownReason + ")");
+            int cleared = credentials.clear(null); // also cancels in-flight reads
+            if (cleared > 0) {
+                log.info("Cleared " + cleared + " delegated credential(s) on shutdown");
+            }
             server.stop();
         }
         stopped.set(true);
@@ -231,8 +265,9 @@ public final class Agent {
      */
     private Map<String, Object> status() {
         Map<String, Object> capabilities = new LinkedHashMap<>();
-        capabilities.put("providerReads", false);
-        capabilities.put("rangeReads", false);
+        // Batch 6: bounded provider range reads with delegated access tokens (no cache, no drive).
+        capabilities.put("providerReads", true);
+        capabilities.put("rangeReads", true);
         capabilities.put("chunkCache", false);
         capabilities.put("virtualDrive", false);
         Map<String, Object> body = new LinkedHashMap<>();
@@ -245,6 +280,95 @@ public final class Agent {
         body.put("capabilities", capabilities);
         body.put("lastStartupError", null);
         return body;
+    }
+
+    // --- Delegated credentials and reads (Batch 6) ---------------------------------------------
+
+    private static final java.util.Set<String> INSTALL_FIELDS =
+            java.util.Set.of("provider", "accountId", "accessToken", "providerExpiresAt", "rootNamespaceId");
+    private static final java.util.Set<String> READ_FIELDS =
+            java.util.Set.of("handle", "fileId", "offset", "length", "expectedSize", "expectedRevision");
+
+    private LocalApiServer.Response installCredential(JsonNode body) {
+        try {
+            if (!onlyFields(body, INSTALL_FIELDS)) {
+                throw new ReadException("invalid_request", 400);
+            }
+            CredentialRegistry.Provider provider = CredentialRegistry.Provider.valueOf(body.path("provider").asString(""));
+            UUID accountId = UUID.fromString(body.path("accountId").asString(""));
+            Instant expires = Instant.parse(body.path("providerExpiresAt").asString(""));
+            JsonNode ns = body.get("rootNamespaceId");
+            CredentialRegistry.Installed installed = credentials.install(provider, accountId,
+                    body.path("accessToken").asString(null), expires, ns == null || ns.isNull() ? null : ns.asString(null));
+            log.info("Installed a delegated " + provider + " credential for account " + accountId
+                    + " (retained until " + installed.retentionExpiresAt() + ")");
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("handle", installed.handle());
+            out.put("retentionExpiresAt", installed.retentionExpiresAt().toString());
+            out.put("providerExpiresAt", installed.providerExpiresAt().toString());
+            return new LocalApiServer.Response.Json(201, out);
+        } catch (ReadException e) {
+            return new LocalApiServer.Response.Json(e.httpStatus(), LocalApiServer.error(e.code()));
+        } catch (IllegalArgumentException | DateTimeParseException e) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+    }
+
+    private LocalApiServer.Response clearCredentials(JsonNode body) {
+        if (!onlyFields(body, java.util.Set.of("accountId"))) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+        UUID accountId = null;
+        JsonNode id = body.get("accountId");
+        if (id != null && !id.isNull()) {
+            try {
+                accountId = UUID.fromString(id.asString(""));
+            } catch (IllegalArgumentException e) {
+                return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+            }
+        }
+        int cleared = credentials.clear(accountId);
+        log.info("Cleared " + cleared + " delegated credential(s)" + (accountId == null ? "" : " for account " + accountId));
+        return new LocalApiServer.Response.Json(200, Map.of("cleared", cleared));
+    }
+
+    private LocalApiServer.Response read(JsonNode body) {
+        try {
+            if (!onlyFields(body, READ_FIELDS) || !body.path("offset").isIntegralNumber() || !body.path("length").isIntegralNumber()
+                    || !body.path("expectedSize").isIntegralNumber() || !body.path("offset").canConvertToLong()
+                    || !body.path("expectedSize").canConvertToLong()) {
+                throw new ReadException("invalid_request", 400);
+            }
+            JsonNode rev = body.get("expectedRevision");
+            ReadService.ReadResult result = reads.read(new ReadService.ReadRequest(body.path("handle").asString(null),
+                    body.path("fileId").asString(null), body.path("offset").asLong(), body.path("length").asLong(),
+                    body.path("expectedSize").asLong(), rev == null || rev.isNull() ? null : rev.asString(null)));
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("X-HyperDrive-Read-Offset", Long.toString(result.offset()));
+            headers.put("X-HyperDrive-Read-Length", Integer.toString(result.length()));
+            headers.put("X-HyperDrive-EOF", Boolean.toString(result.eof()));
+            headers.put("X-HyperDrive-Revision-Pinned", Boolean.toString(result.revisionPinned()));
+            if (result.revision() != null) {
+                headers.put("X-HyperDrive-Revision", result.revision());
+            }
+            return new LocalApiServer.Response.Binary(200, result.data(), result.length(), headers);
+        } catch (ReadException e) {
+            log.info("Read failed: " + e.code());
+            Map<String, Object> out = new LinkedHashMap<>(LocalApiServer.error(e.code()));
+            if (e.retryAfter() != null) {
+                out.put("retryAfterSeconds", e.retryAfter().toSeconds());
+            }
+            return new LocalApiServer.Response.Json(e.httpStatus(), out);
+        }
+    }
+
+    private static boolean onlyFields(JsonNode body, java.util.Set<String> allowed) {
+        for (String name : body.propertyNames()) {
+            if (!allowed.contains(name)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void emit(Map<String, Object> message) {

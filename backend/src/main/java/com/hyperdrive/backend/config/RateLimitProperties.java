@@ -25,5 +25,7 @@ public record RateLimitProperties(
         @DefaultValue("60") int storageStatus,
         /** Account and file-browsing API calls. */
         @DefaultValue("300") int browse,
+        /** Provider read-credential delegation (Batch 6). */
+        @DefaultValue("30") int readCredentials,
         @DefaultValue("10000") int maxTrackedClients) {
 }

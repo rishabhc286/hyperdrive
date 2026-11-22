@@ -356,3 +356,46 @@ Not executed yet. Run it once a real OAuth client exists:
     still listed at Google until you remove it there.
 11. **7-day expiry (Testing mode):** after 7 days the account shows Needs reconnect.
 12. **Logs:** search the backend log for tokens, emails or file names. There should be none.
+
+## Content reads (Batch 6)
+
+How the agent reads ranges is described in
+[local-agent.md](local-agent.md#bounded-read-contract-batch-6); the delegation trade-offs are in
+[ADR 0002](adr/0002-provider-access-token-delegation.md).
+
+- **Scope:** `drive.readonly` already covers content, so no new consent is needed.
+- **Endpoint:** `GET https://www.googleapis.com/drive/v3/files/{id}?alt=media&supportsAllDrives=true`
+  with `Range: bytes=a-b`.
+- **Supported files:** ordinary binary files with `capabilities.canDownload` and a size.
+  - Folders, shortcuts and native Google Docs/Sheets/Slides are refused before any token is
+    delegated. Export isn't implemented.
+  - `fileNotDownloadable` and download restrictions are reported as unsupported.
+- **Revision:** the listing now carries `headRevisionId` and `md5Checksum` (binary files only).
+  Ranged `alt=media` downloads serve the **current** content. `revisions.get?alt=media` only works
+  for "Keep Forever" revisions, so Google reads are **not revision-pinned**; only the total size
+  is checked against the listing.
+- **Redirects:** Google doesn't document whether `alt=media` redirects. The agent refuses all
+  redirects so the bearer token is never sent to another origin; if live testing shows one, the
+  read fails with "provider didn't return a valid response".
+- **Errors:** 401 → one re-delegation; rate-limit 403/429 → retried, then reported; other 403s →
+  forbidden (not treated as expiry); 404 → not found.
+
+### Manual QA: content reads (requires real Google credentials)
+
+Not executed yet.
+
+1. **Read:** in Files, open a connected Drive and click an ordinary file larger than 4 MiB. In
+   **Verify file read**, run offset 0 and length 4,194,304.
+   - Expect success, 4,194,304 bytes and "Not pinned".
+   - Compare the SHA-256 with the first 4 MiB of a downloaded copy (`Get-FileHash`).
+2. **Middle and final ranges:** an offset in the middle gives the exact length; an offset 100
+   bytes before the end gives 100 bytes and "reached end of file".
+3. **Native docs and shortcuts:** no Verify panel is offered (the click shows the "not
+   implemented" note).
+4. **Restricted download:** for a file whose owner disabled downloading for viewers, expect
+   "can't be read as an ordinary file".
+5. **Redirect check:** record whether any read fails with "provider didn't return a valid
+   response". That would indicate an undocumented redirect.
+6. **Sign out:** sign out and check that the agent log shows the delegated credentials cleared.
+7. **Logs:** search the backend, desktop and agent logs for `ya29.`, `Bearer` and file names.
+   There should be none.

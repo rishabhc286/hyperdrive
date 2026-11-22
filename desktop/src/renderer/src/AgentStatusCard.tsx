@@ -70,10 +70,6 @@ interface Props {
 export function AgentStatusCard({ status, restarting, onRestart }: Props) {
   const busy =
     restarting || status === null || status.state === 'starting' || status.state === 'stopping' || status.state === 'restarting';
-  const nothingImplemented =
-    status?.capabilities !== null &&
-    status?.capabilities !== undefined &&
-    !Object.values(status.capabilities).some(Boolean);
   return (
     <article className="card" aria-labelledby="agent-card-title">
       <h2 id="agent-card-title">Local agent</h2>
@@ -94,10 +90,11 @@ export function AgentStatusCard({ status, restarting, onRestart }: Props) {
         </p>
       )}
       <p className="muted small">
-        Ready means the HyperDrive agent process is running on this PC and answering. It doesn’t connect to Google Drive
-        or Dropbox, read files, cache anything or create a drive yet
-        {nothingImplemented ? ' (it reports no file, cache or drive capabilities)' : ''}. Browsing your cloud accounts
-        doesn’t depend on it.
+        Ready means the HyperDrive agent process is running on this PC and answering.
+        {status?.capabilities?.rangeReads
+          ? ' It can read bounded byte ranges (at most 4 MiB at a time) of your files from Google Drive or Dropbox when you run “Verify file read”, using short-lived access the HyperDrive server delegates to it in memory.'
+          : ' It doesn’t read files from Google Drive or Dropbox.'}{' '}
+        It doesn’t cache anything or create a drive yet. Browsing your cloud accounts doesn’t depend on it.
       </p>
       <button type="button" className="button button-secondary" onClick={onRestart} disabled={busy}>
         {restarting || status?.state === 'restarting' ? 'Restarting…' : 'Restart agent'}

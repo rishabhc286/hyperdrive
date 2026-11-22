@@ -42,6 +42,10 @@ There was no existing gRPC foundation in the repository to reuse.
 
 ## Decision 3: no provider credentials in the agent (yet), and no accidental proxying
 
+> **Update (Batch 6):** the open choice below was decided in
+> [ADR 0002](0002-provider-access-token-delegation.md): option 1, short-lived access-token
+> delegation. The no-proxying rule still holds.
+
 - **No credentials in the agent:** refresh tokens stay on the backend. The agent receives none
   in this batch, and it has no endpoint or configuration for them.
 - **No proxying through the backend:** file contents must **not** start flowing through the
@@ -65,7 +69,7 @@ There was no existing gRPC foundation in the repository to reuse.
 
 - **Agent status means process health only.** The UI and docs say "Ready" means only that the
   agent process is healthy, never that drives, caches or streaming work.
-- **Capability flags are truthful.** They're all `false`, and they become `true` only when
-  tested features land.
+- **Capability flags are truthful.** They were all `false` in Batch 5. Since Batch 6,
+  `providerReads` and `rangeReads` are `true`; `chunkCache` and `virtualDrive` stay `false`.
 - **Protocol versioning.** `protocolVersion` is checked by both sides. Any incompatible change
   to bootstrap, handshake or status bumps it.

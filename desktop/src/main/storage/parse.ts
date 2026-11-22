@@ -72,6 +72,7 @@ export function parseAccount(value: unknown): ConnectedAccount {
     email: optStr(v, 'email', 320),
     status: oneOf(v['status'], ACCOUNT_STATUSES),
     rootType: rootType === null || rootType === undefined ? null : oneOf(rootType, ['USER', 'TEAM'] as const),
+    contentReadGranted: v['contentReadGranted'] === true,
     connectedAt: str(v, 'connectedAt'),
     lastSuccessAt: optStr(v, 'lastSuccessAt', 64),
     lastErrorCode: lastErrorCode !== null && ERROR_CODE.test(lastErrorCode) ? lastErrorCode : null

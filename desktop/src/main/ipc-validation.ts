@@ -3,6 +3,7 @@ import {
   isStorageProvider,
   isValidContinuation,
   isValidDirectory,
+  MAX_READ_BYTES,
   PROVIDER_FILE_ID,
   UUID,
   type ListFilesRequest,
@@ -90,6 +91,31 @@ export function parseListFilesPayload(channel: string, args: unknown[]): ListFil
     throw new InvalidIpcPayloadError(channel);
   }
   return { accountId, directory: directory ?? null, continuation: continuation ?? null };
+}
+
+/** Exactly `[{ accountId, fileId, offset, length }]` with integer bounds (length ≤ 4 MiB). */
+export function parseVerifyReadPayload(
+  channel: string,
+  args: unknown[]
+): { accountId: string; fileId: string; offset: number; length: number } {
+  const payload = singleObject(channel, args, ['accountId', 'fileId', 'offset', 'length']);
+  const fileId = payload['fileId'];
+  const offset = payload['offset'];
+  const length = payload['length'];
+  if (
+    typeof fileId !== 'string' ||
+    !PROVIDER_FILE_ID.test(fileId) ||
+    typeof offset !== 'number' ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    typeof length !== 'number' ||
+    !Number.isSafeInteger(length) ||
+    length < 1 ||
+    length > MAX_READ_BYTES
+  ) {
+    throw new InvalidIpcPayloadError(channel);
+  }
+  return { accountId: uuidField(channel, payload, 'accountId'), fileId, offset, length };
 }
 
 /** Exactly `[{ accountId: uuid, fileId: id }]`. */

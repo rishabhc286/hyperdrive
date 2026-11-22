@@ -24,8 +24,8 @@ describe('Local agent status', () => {
     await waitFor(() => expect(within(card()).getByTestId('agent-state')).toHaveTextContent('Local agent: Ready'));
     expect(card()).toHaveTextContent('0.1.0-SNAPSHOT');
     expect(card()).toHaveTextContent('2 min');
-    expect(card()).toHaveTextContent(/doesn’t connect to Google Drive or Dropbox, read files, cache anything or create a drive yet/);
-    expect(card()).toHaveTextContent(/reports no file, cache or drive capabilities/);
+    expect(card()).toHaveTextContent(/read bounded byte ranges \(at most 4 MiB at a time\)/);
+    expect(card()).toHaveTextContent(/doesn’t cache anything or create a drive yet/);
     // The other surfaces keep their own, separate status.
     expect(screen.getByRole('article', { name: 'Virtual drive' })).toHaveTextContent('Virtual drive not implemented yet.');
     expect(screen.getByRole('article', { name: 'Backend' })).toBeInTheDocument();
@@ -94,7 +94,8 @@ describe('Local agent status', () => {
       rootType: 'USER',
       connectedAt: '2026-11-22T10:00:00Z',
       lastSuccessAt: null,
-      lastErrorCode: null
+      lastErrorCode: null,
+      contentReadGranted: true
     };
     const mock = createMockApi(status('signed-in', { user: ONBOARDED_USER }));
     mock.agent.set(FAILED);

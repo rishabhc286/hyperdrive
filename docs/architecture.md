@@ -59,13 +59,20 @@ process.
 - **Authentication:** a per-launch 256-bit secret sent over stdin, and a validated one-line
   handshake on stdout.
 - **Lifetime:** stdin also serves as the parent-lifetime channel.
-- **Capabilities:** all reported as `false`.
+- **Capabilities:** `providerReads` and `rangeReads` are `true` since Batch 6; `chunkCache` and
+  `virtualDrive` are `false`.
 
-**Still planned:** translating filesystem reads into provider range requests, the local chunk
-cache and metrics. Provider credentials stay on the backend for now. The content-transfer and
-credential-delegation design, and the VFS transport, are open decisions; see
-[ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md) and
-[local-agent.md](local-agent.md).
+**Provider reads (Batch 6):**
+- The desktop main process obtains a delegated provider access token from the backend and hands
+  it to the agent, keeping only an opaque handle.
+- The agent then serves bounded reads (`/local/v1/reads`, at most 4 MiB) by calling the
+  provider's fixed content endpoint with `Range`. Bytes go provider → agent → main process,
+  where the diagnostic hashes and discards them.
+- See [ADR 0002](adr/0002-provider-access-token-delegation.md) and
+  [local-agent.md](local-agent.md#bounded-read-contract-batch-6).
+
+**Still planned:** the local chunk cache, prefetching and metrics, and the VFS ↔ agent transport
+(an open decision; see [ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md)).
 
 ### VFS: planned
 
@@ -148,19 +155,20 @@ user's machine, in the agent's cache directory. They will **not** be stored in R
 | --- | --- | --- |
 | Connect (separate from sign-in, own consent) | Implemented | Implemented |
 | Account identity | OIDC subject (validated ID token) | `account_id` from `users/get_current_account` |
-| Scopes | `drive.readonly` (restricted) + `openid email profile` | `account_info.read files.metadata.read` |
+| Scopes | `drive.readonly` (restricted) + `openid email profile` | `account_info.read files.metadata.read files.content.read` (content scope since Batch 6; older connections lack it) |
 | Root browsing | My Drive root | Account root via `Dropbox-API-Path-Root` (team space for team members) |
 | Nested folders | Yes (by folder id) | Yes (by `path_lower`) |
 | Pagination | Yes (`nextPageToken`, wrapped) | Yes (`cursor` + `list_folder/continue`, wrapped) |
 | Shared drives / "Shared with me" | Not implemented | n/a (team space supported, untested live) |
 | Native documents | Labeled, no size, not downloadable | Non-downloadable cloud docs labeled, no size |
 | Shortcuts / links | Shown, not followed | Shown as "Link", not followed |
-| Content download | **Not implemented** | **Not implemented** |
-| Streaming (range reads) | **Not implemented** | **Not implemented** |
+| Content download (whole file) | **Not implemented** | **Not implemented** |
+| Bounded range read via agent (≤ 4 MiB, diagnostic) | Implemented: `files.get?alt=media`, ordinary binaries only, **not revision-pinned** | Implemented: `files/download`, ordinary files, **pinned with `rev:`** when the listed revision is known |
+| Streaming / playback / chunk cache | **Not implemented** | **Not implemented** |
 | Writes (upload/edit/rename/move/delete) | **Not implemented** | **Not implemented** |
 | Mounted drive (WinFsp) | **Not implemented** | **Not implemented** |
-| Local agent reads for this provider | **Not implemented** (agent has no credentials) | **Not implemented** (agent has no credentials) |
-| Live end-to-end verification | Not yet (no OAuth client) | Not yet (no Dropbox app) |
+| Credentials in the agent | Delegated access token only, memory-only, ≤ 20 min retention | Delegated access token only, memory-only, ≤ 20 min retention |
+| Live end-to-end verification | Not yet (no OAuth client); reads tested only against local mock servers | Not yet (no Dropbox app); reads tested only against local mock servers |
 
 ## Desktop security
 

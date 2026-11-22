@@ -30,6 +30,23 @@ export type LaunchConfig =
   | { readonly error: AgentErrorCode };
 
 export type AgentPath = '/local/v1/health' | '/local/v1/status';
+/** The only POST endpoints the desktop may call on the agent (Batch 6). */
+export type AgentPostPath = '/local/v1/credentials' | '/local/v1/credentials/clear' | '/local/v1/reads';
+
+export interface AgentPostResponse {
+  readonly status: number;
+  /** Only the X-HyperDrive-* headers and Content-Type, lower-cased names. */
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: Uint8Array;
+}
+
+/** The agent isn't ready (or no POST transport is configured); nothing was sent. */
+export class AgentUnavailableError extends Error {
+  constructor() {
+    super('Local agent is not ready');
+    this.name = 'AgentUnavailableError';
+  }
+}
 
 export interface AgentManagerDeps {
   readonly launch: LaunchConfig;
@@ -40,6 +57,15 @@ export interface AgentManagerDeps {
   readonly spawn: (command: string, args: readonly string[]) => AgentChild;
   /** Authenticated GET to http://127.0.0.1:<port><path>; resolves with status + parsed JSON. */
   readonly httpGet: (port: number, path: AgentPath, secret: string, timeoutMs: number) => Promise<{ status: number; body: unknown }>;
+  /** Authenticated JSON POST to http://127.0.0.1:<port><path> with a bounded raw response body. */
+  readonly httpPost?: (
+    port: number,
+    path: AgentPostPath,
+    secret: string,
+    body: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ) => Promise<AgentPostResponse>;
   readonly randomSecret: () => string;
   readonly now?: () => number;
   readonly startupTimeoutMs?: number;
@@ -56,6 +82,7 @@ interface Launch {
   readonly secret: string;
   readonly exited: Promise<void>;
   port: number | null;
+  instanceId: string | null;
   stopping: boolean;
   hasExited: boolean;
 }
@@ -128,6 +155,24 @@ export class AgentManager {
       await this.statusInFlight;
     }
     return this.snapshot();
+  }
+
+  /** The ready agent's instance id; changes on every (re)start, so callers can drop stale handles. */
+  instanceId(): string | null {
+    return this.state === 'ready' ? (this.current?.instanceId ?? null) : null;
+  }
+
+  /**
+   * Authenticated POST to one of the fixed agent endpoints. Main-process only; the secret and port
+   * never leave this class. Throws AgentUnavailableError unless the agent is ready.
+   */
+  async post(path: AgentPostPath, body: unknown, timeoutMs = 60_000, signal?: AbortSignal): Promise<AgentPostResponse & { instanceId: string }> {
+    const launch = this.current;
+    if (this.state !== 'ready' || !launch?.port || !launch.instanceId || !this.deps.httpPost) {
+      throw new AgentUnavailableError();
+    }
+    const response = await this.deps.httpPost(launch.port, path, launch.secret, body, timeoutMs, signal);
+    return { ...response, instanceId: launch.instanceId };
   }
 
   /** Starts the agent once; concurrent calls share the same attempt. */
@@ -224,6 +269,7 @@ export class AgentManager {
         resolveExit = resolve;
       }),
       port: null,
+      instanceId: null,
       stopping: false,
       hasExited: false
     };
@@ -279,6 +325,7 @@ export class AgentManager {
     if (outcome.type === 'error') return this.failLaunch(launch, outcome.code);
 
     launch.port = outcome.port;
+    launch.instanceId = outcome.instanceId;
     const health = await this.deps
       .httpGet(outcome.port, '/local/v1/health', secret, this.requestTimeoutMs)
       .catch(() => null);

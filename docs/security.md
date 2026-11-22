@@ -108,7 +108,8 @@ Details: [local-agent.md](local-agent.md#loopback-threat-model-honest-scope) and
 - **Not reachable from browsers:**
   - `Host` must be exactly `127.0.0.1:<port>`, which blocks DNS rebinding.
   - Any `Origin` header is rejected, and no CORS headers are sent.
-  - GET only, with no bodies or query strings, and a bounded worker pool and request time.
+  - GET for status; POST only on the three fixed Batch 6 paths, with bounded `application/json`
+    bodies of known fields. No query strings, and a bounded worker pool and request time.
 - **No dangerous endpoints:** no shutdown, file, environment, path, configuration-write, proxy or
   shell endpoints. Shutdown exists only on the owned stdin channel.
 - **Fail-closed bootstrap:** at most 8 KiB, exactly one protocol version, required fields only,
@@ -122,6 +123,52 @@ Details: [local-agent.md](local-agent.md#loopback-threat-model-honest-scope) and
   never the port, secret, paths or spawn parameters.
 - **Not a sandbox:** malware already running as the same Windows user can still reach the agent
   (for example by reading process memory). That's inherent to desktop software.
+
+## Provider-read delegation (Batch 6)
+
+Details: [ADR 0002](adr/0002-provider-access-token-delegation.md) and
+[local-agent.md](local-agent.md#bounded-read-contract-batch-6).
+
+**Backend** (`POST /api/v1/accounts/{id}/read-credentials`):
+- **Checks run first:** the HyperDrive session and completed onboarding, account ownership (404
+  for others), connection status (409 `account_needs_reconnect`) and the stored content scope
+  (409 `content_permission_missing`). All run **before** any refresh or provider call.
+- **What's returned:** only the access token, its provider expiry and, for Dropbox, the root
+  namespace ID. The refresh token never leaves the backend. Scopes are never silently added.
+- **Delivery:** `Cache-Control: no-store` with `Pragma: no-cache`, and a per-user rate limit
+  (default 30 per minute).
+- **Audit and debugging:** an audit log line records user, session, account, provider and expiry,
+  never the token. There is no token-debug endpoint.
+
+**Desktop main process:**
+- **Handling the token:** it never stores the token. It passes it to the agent and keeps only
+  the opaque handle, bound to the agent `instanceId` (a restart invalidates it).
+- **Renderer bridge:** preload and the renderer receive only diagnostic facts (sizes, time,
+  SHA-256, an error code). Never tokens, handles or bytes.
+- **Re-delegation:** after `credential_rejected`, `credential_expired` or `unknown_credential`,
+  it re-delegates **once** per read, single-flight per account.
+- **Cleanup:**
+  - Disconnect clears that account's credential in the agent. Sign-out and session expiry clear
+    all of them.
+  - If a clear can't be confirmed, the main process restarts its agent, so no unmanaged
+    authenticated agent keeps the token.
+- **Backend URL:** `HYPERDRIVE_BACKEND_URL` must be `https`, unless it is loopback
+  (`127.0.0.1`, `localhost` or `[::1]`) for development. TLS validation is never disabled.
+
+**Agent:**
+- **Storage:** credentials are kept in memory only (no disk), at most 32, one per account. Each is
+  retained ≤ 20 min and never past provider expiry, and expired ones are refused.
+- **Provider calls:** fixed provider endpoints, redirects refused, response-size and
+  `Content-Range` validation, and no decompression.
+- **No leakage:** tokens never appear in URLs, arguments, logs or error bodies.
+
+**Honest limits:**
+- **Not file-scoped:** a delegated token is **account-wide** at the provider, not limited to one
+  file. HyperDrive can't narrow Google or Dropbox tokens.
+- **No provider revocation:** clearing the agent doesn't revoke the token at the provider. It
+  stays valid until the provider's own expiry.
+- **No zeroization:** Java strings and Node buffers can't be reliably zeroized, and HyperDrive
+  doesn't claim zeroization.
 
 ## Desktop
 
@@ -147,6 +194,13 @@ Details: [local-agent.md](local-agent.md#loopback-threat-model-honest-scope) and
 - **Refreshes:** single-flight. The access token is refreshed 30 s before expiry.
 
 ## Known limitations
+
+- **Delegated tokens outlive local cleanup:** see
+  [Provider-read delegation](#provider-read-delegation-batch-6). Malware running as the same
+  Windows user can copy a delegated token from process memory and use it account-wide until it
+  expires at the provider.
+- **Provider reads not verified live:** they are tested only against local mock provider
+  servers. Real Google and Dropbox range behavior, error bodies and redirects are unverified.
 
 - **Agent orphans:** an agent that hangs without reading stdin, after Electron has died, isn't
   cleaned up automatically. There's no Windows Job Object yet; the data-directory lock then makes

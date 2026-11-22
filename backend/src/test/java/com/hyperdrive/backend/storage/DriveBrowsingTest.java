@@ -119,7 +119,7 @@ class DriveBrowsingTest extends StorageIntegrationTest {
         Map<String, String> params = query(google.driveRequests.get(0));
         assertThat(params.get("q")).isEqualTo("'" + ROOT + "' in parents and trashed = false");
         assertThat(params.get("fields")).isEqualTo("nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed,"
-                + "capabilities/canDownload,shortcutDetails/targetId,shortcutDetails/targetMimeType)");
+                + "capabilities/canDownload,headRevisionId,md5Checksum,shortcutDetails/targetId,shortcutDetails/targetMimeType)");
         assertThat(params.get("pageSize")).isEqualTo("100");
         assertThat(params.get("corpora")).isEqualTo("user");
         assertThat(params.get("includeItemsFromAllDrives")).isEqualTo("false");

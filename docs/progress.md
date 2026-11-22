@@ -1,5 +1,76 @@
 # Progress
 
+## Batch 6: provider-read delegation and bounded range reads (2026-11-22)
+
+### Foundation check before starting
+
+- The working tree was clean at `1157d46`. Baseline: backend 211, agent 28 and desktop 201 tests,
+  all passing.
+
+### Completed
+
+- **Backend:** `POST /api/v1/accounts/{id}/read-credentials`.
+  - Checks session, onboarding, ownership, connection status and content scope **before** any
+    refresh or provider call.
+  - Returns only the access token (valid at least 5 more minutes), its expiry and the Dropbox root
+    namespace.
+  - `no-store`, a per-user rate limit (30 per minute) and a token-free audit log line.
+- **Scopes and listings:**
+  - Dropbox consent now requests `files.content.read`. Older grants report
+    `contentReadGranted=false`, which gives 409 `content_permission_missing` on delegation.
+  - Drive listings carry `headRevisionId` and `md5Checksum`.
+- **Agent:**
+  - Endpoints: `POST /local/v1/credentials`, `/credentials/clear` and `/reads`.
+  - An in-memory credential registry: ≤ 32 credentials, one per account, ≤ 20 min retention,
+    never past provider expiry.
+  - A bounded read service: ≤ 4 MiB, overflow-safe, EOF and zero-byte reads answered without a
+    provider call, 8 global and 4 per-account concurrent reads.
+  - Provider reader: fixed endpoints, no redirects, identity encoding (compressed bodies
+    rejected), exact `Content-Range` and length validation, a controlled ignored-Range rule,
+    classified errors and bounded retries.
+  - Capabilities `providerReads` and `rangeReads` are `true`. Credentials are cleared on shutdown.
+- **Desktop:**
+  - `ReadCoordinator`: delegation, handles bound to the agent `instanceId`, single-flight renewals,
+    one re-delegation, clear-or-restart on disconnect and sign-out, and a main-process SHA-256 with
+    the buffer zeroed afterwards.
+  - IPC `storage.verifyFileRead` with strict validation.
+  - UI: a **Verify file read** panel, a Cloud Accounts note and Reconnect for a missing content
+    permission, and accurate agent-card text.
+  - `HYPERDRIVE_BACKEND_URL` must be https unless it is loopback.
+- **Docs:** ADR 0002 (ADR 0001 now links to it), a read-contract section in local-agent.md,
+  security, the architecture matrix, Google Drive and Dropbox content-read sections with live
+  checklists, README and `.env.example`.
+
+### Checks executed (Windows 11, Docker, JDK 25.0.5, Node 24.19.0)
+
+- Backend `mvnw verify`: 218 tests, 0 failures (Testcontainers PostgreSQL 18).
+- Agent `mvnw verify`: 51 tests, 0 failures (local mock Google and Dropbox servers).
+- Desktop: typecheck, lint and build exit 0. Vitest: 226 tests, 0 failures, including the
+  real-jar smoke test of the credential and read endpoints.
+- Mutation checks: removing buffer zeroing, removing single-flight renewal, and accepting an
+  ignored Range for a partial request were each caught by a failing test.
+
+### Defects found during this batch and fixed
+
+- Provider timeouts were reported as `unavailable`; they're now `timeout`.
+- The agent worker pool never grew past 2 threads: `ThreadPoolExecutor` only grows when its
+  queue is full. That silently serialized reads, so the core size is now 12.
+- The docs claimed compressed bodies were rejected before the code did. A `Content-Encoding`
+  check and a test now back the claim.
+
+### Requires manual verification (not executed)
+
+- Live Google Drive and Dropbox reads: see the "Content reads" checklists in google-drive.md
+  and dropbox.md. Range, redirect and error-body behavior has been tested only against mocks.
+
+### Known limitations
+
+- **Account-wide tokens:** delegated tokens are account-wide at the provider, and clearing the
+  agent doesn't revoke them (ADR 0002).
+- **No pinning on Google:** Google reads aren't revision-pinned. No read is marked cache-safe.
+- **Loopback transport:** the read contract runs over loopback HTTP and isn't the final VFS
+  transport.
+
 ## License added (2026-11-22)
 
 - **License file:** added `LICENSE` with the official GPL-3.0 text from

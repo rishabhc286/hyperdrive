@@ -57,6 +57,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
             // Status polling and cancellation.
             bucket = STORAGE + "transactions";
             limit = properties.storageStatus();
+        } else if ("POST".equals(request.getMethod()) && path.startsWith(ACCOUNTS + "/") && path.endsWith("/read-credentials")) {
+            // Provider-token delegation: its own, tighter bucket.
+            bucket = ACCOUNTS + "/read-credentials";
+            limit = properties.readCredentials();
         } else if (path.equals(ACCOUNTS) || path.startsWith(ACCOUNTS + "/")) {
             bucket = ACCOUNTS;
             limit = properties.browse();

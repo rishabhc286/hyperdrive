@@ -45,7 +45,7 @@ public class GoogleDriveBrowser implements FileBrowser, ProviderHttp.Classifier 
     private static final String NATIVE_PREFIX = "application/vnd.google-apps.";
 
     static final String FILE_FIELDS = "id,name,mimeType,size,modifiedTime,trashed,capabilities/canDownload,"
-            + "shortcutDetails/targetId,shortcutDetails/targetMimeType";
+            + "headRevisionId,md5Checksum,shortcutDetails/targetId,shortcutDetails/targetMimeType";
     static final String LIST_FIELDS = "nextPageToken,files(" + FILE_FIELDS + ")";
 
     private static final Set<String> RATE_LIMIT_REASONS =
@@ -190,7 +190,11 @@ public class GoogleDriveBrowser implements FileBrowser, ProviderHttp.Classifier 
         String targetMime = kind == FileKind.SHORTCUT ? text(shortcut, "targetMimeType") : null;
         String name = text(node, "name");
         return new ProviderFile(id, name == null ? "" : name, kind, mimeType, size, parseInstant(text(node, "modifiedTime")),
-                canDownload, kind == FileKind.FOLDER ? id : null, null, null, null,
+                canDownload, kind == FileKind.FOLDER ? id : null,
+                // headRevisionId and md5Checksum exist only for binary content (Drive docs); never invented.
+                kind == FileKind.FILE ? text(node, "headRevisionId") : null,
+                kind == FileKind.FILE ? text(node, "md5Checksum") : null,
+                kind == FileKind.FILE && text(node, "md5Checksum") != null ? "md5" : null,
                 StorageProvider.GOOGLE_DRIVE.isValidFileId(targetId) ? targetId : null, targetMime);
     }
 

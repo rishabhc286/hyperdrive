@@ -29,6 +29,14 @@ public enum StorageProvider {
         return pathSegment;
     }
 
+    /**
+     * The granted scope that allows reading file <em>content</em> (not just metadata). Google's
+     * drive.readonly covers both; Dropbox needs files.content.read in addition to files.metadata.read.
+     */
+    public String contentReadScope() {
+        return this == GOOGLE_DRIVE ? "https://www.googleapis.com/auth/drive.readonly" : "files.content.read";
+    }
+
     /** Spring Security / internal client registration id for this provider's storage consent. */
     public String registrationId() {
         return this == GOOGLE_DRIVE ? "google-drive" : "dropbox";

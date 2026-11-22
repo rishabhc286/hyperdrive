@@ -30,6 +30,9 @@ public class DropboxConnectionCompleter implements ConnectionCompleter {
     public static final String ISSUER = "https://www.dropbox.com";
     public static final String SCOPE_ACCOUNT_INFO = "account_info.read";
     public static final String SCOPE_METADATA = "files.metadata.read";
+    /** Requested since Batch 6 so the local agent can read file content. Optional for browsing. */
+    public static final String SCOPE_CONTENT = "files.content.read";
+    /** Needed for the connection itself (identity and browsing); content read is tracked separately. */
     public static final Set<String> REQUIRED_SCOPES = Set.of(SCOPE_ACCOUNT_INFO, SCOPE_METADATA);
 
     private static final Logger log = LoggerFactory.getLogger(DropboxConnectionCompleter.class);

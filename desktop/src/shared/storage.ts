@@ -19,6 +19,8 @@ export interface ConnectedAccount {
   readonly connectedAt: string;
   readonly lastSuccessAt: string | null;
   readonly lastErrorCode: string | null;
+  /** Whether the stored grant allows reading file contents (Dropbox accounts from before Batch 6: false). */
+  readonly contentReadGranted: boolean;
 }
 
 export interface ProviderAvailability {
@@ -100,6 +102,54 @@ export interface ListFilesRequest {
   readonly continuation?: string | null;
 }
 
+/** Largest single diagnostic read: one future cache chunk, 4 MiB = 4,194,304 bytes. */
+export const MAX_READ_BYTES = 4 * 1024 * 1024;
+
+export interface VerifyReadRequest {
+  readonly accountId: string;
+  readonly fileId: string;
+  readonly offset: number;
+  readonly length: number;
+}
+
+export type ReadError =
+  | 'unsupported-file'
+  | 'content-permission-missing'
+  | 'needs-reconnect'
+  | 'agent-unavailable'
+  | 'not-found'
+  | 'forbidden'
+  | 'file-changed'
+  | 'rate-limited'
+  | 'provider-unavailable'
+  | 'range-not-supported'
+  | 'credential-rejected'
+  | 'invalid-request'
+  | 'session-expired'
+  | 'backend-unreachable'
+  | 'cancelled'
+  | 'unknown';
+
+/**
+ * Safe diagnostic facts about one real provider read through the agent. Never the bytes: the main
+ * process hashes them and discards them.
+ */
+export type ReadDiagnostic =
+  | {
+      readonly ok: true;
+      readonly provider: StorageProvider;
+      readonly offset: number;
+      readonly bytesRequested: number;
+      readonly bytesReceived: number;
+      readonly eof: boolean;
+      readonly elapsedMs: number;
+      /** SHA-256 of the received bytes, hex. */
+      readonly sha256: string;
+      /** True only for Dropbox reads pinned to the listed revision. */
+      readonly revisionPinned: boolean;
+    }
+  | { readonly ok: false; readonly error: ReadError };
+
 export interface StorageApi {
   listAccounts(): Promise<StorageResult<readonly ConnectedAccount[]>>;
   listProviders(): Promise<StorageResult<readonly ProviderAvailability[]>>;
@@ -112,6 +162,8 @@ export interface StorageApi {
   getFileMetadata(input: { accountId: string; fileId: string }): Promise<StorageResult<StorageFile>>;
   /** Removes HyperDrive's link and stored credentials. Does not delete files or sign out. */
   disconnectAccount(input: { accountId: string }): Promise<StorageResult<null>>;
+  /** Development diagnostic: one bounded real read of a listed file through the local agent. */
+  verifyFileRead(input: VerifyReadRequest): Promise<ReadDiagnostic>;
 }
 
 export const StorageIpcChannel = {
@@ -122,7 +174,8 @@ export const StorageIpcChannel = {
   cancelConnection: 'hyperdrive:storage:cancel-connection',
   listFiles: 'hyperdrive:storage:list-files',
   getFileMetadata: 'hyperdrive:storage:get-file-metadata',
-  disconnectAccount: 'hyperdrive:storage:disconnect-account'
+  disconnectAccount: 'hyperdrive:storage:disconnect-account',
+  verifyFileRead: 'hyperdrive:storage:verify-file-read'
 } as const;
 
 /** Stable provider file ids: Drive's id alphabet, or Dropbox "id:" + that alphabet. */

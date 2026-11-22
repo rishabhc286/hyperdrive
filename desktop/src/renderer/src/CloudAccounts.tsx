@@ -247,6 +247,12 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
                 ) : (
                   <span className="badge badge-ok">Connected</span>
                 )}
+                {account.status === 'CONNECTED' && !account.contentReadGranted && (
+                  <span className="muted small">
+                    Browsing works, but this connection can’t read file contents. Reconnect to grant read access to file
+                    contents (still read-only).
+                  </span>
+                )}
               </div>
               {confirming === account.id ? (
                 <div className="confirm" role="group" aria-label={`Confirm disconnecting ${name} ${label}`}>
@@ -276,7 +282,7 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
                 </div>
               ) : (
                 <div className="actions">
-                  {account.status === 'NEEDS_RECONNECT' && (
+                  {(account.status === 'NEEDS_RECONNECT' || !account.contentReadGranted) && (
                     <button
                       type="button"
                       className="button button-small"

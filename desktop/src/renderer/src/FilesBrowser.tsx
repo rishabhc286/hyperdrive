@@ -11,6 +11,7 @@ import {
   storageErrorMessage
 } from './storage-format';
 import type { AccountsState } from './useStorage';
+import { canVerifyRead, VerifyRead } from './VerifyRead';
 
 export interface FilesBrowserProps {
   readonly storage: StorageApi;
@@ -59,6 +60,7 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
   const [keyed, setKeyed] = useState<KeyedListing | null>(null);
   const [refreshCount, setRefreshCount] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState<{ accountId: string; file: StorageFile } | null>(null);
   const seq = useRef(0);
 
   // A disconnected (or unknown) account falls back to All storage; its listing is never shown again.
@@ -95,6 +97,7 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
 
   const refresh = () => {
     setNotice(null);
+    setVerifying(null);
     setRefreshCount((n) => n + 1);
     if (!accountId) onReloadAccounts();
   };
@@ -129,11 +132,13 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
 
   const openAccount = (target: ConnectedAccount) => {
     setNotice(null);
+    setVerifying(null);
     setRequested({ kind: 'account', accountId: target.id, path: [{ locator: null, name: accountTitle(target) }] });
   };
 
   const goTo = (index: number) => {
     setNotice(null);
+    setVerifying(null);
     if (index < 0 || location.kind === 'all') {
       setRequested(ALL);
       return;
@@ -146,6 +151,7 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
       case 'FOLDER':
         if (location.kind === 'account' && file.directoryLocator) {
           setNotice(null);
+          setVerifying(null);
           setRequested({ ...location, path: [...location.path, { locator: file.directoryLocator, name: file.name || 'Untitled folder' }] });
         } else {
           setNotice(`“${file.name}” can’t be opened: the provider gave no way to list it.`);
@@ -160,6 +166,16 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
         );
         return;
       case 'FILE':
+        if (account && canVerifyRead(file, account)) {
+          setNotice(null);
+          setVerifying(null);
+          setVerifying({ accountId: account.id, file });
+          return;
+        }
+        if (account && file.canDownload && file.sizeBytes !== null && !account.contentReadGranted) {
+          setNotice(`Opening “${file.name}” isn’t implemented yet. Reading file contents also needs this account to be reconnected with read permission.`);
+          return;
+        }
         setNotice(`Opening “${file.name}” isn’t implemented yet. This build only shows file details.`);
         return;
     }
@@ -251,6 +267,16 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
         <div className="notice notice-info" role="status">
           {notice}
         </div>
+      )}
+
+      {account && verifying && verifying.accountId === account.id && (
+        <VerifyRead
+          key={`${verifying.accountId}:${verifying.file.providerFileId}`}
+          storage={storage}
+          account={account}
+          file={verifying.file}
+          onClose={() => setVerifying(null)}
+        />
       )}
 
       {location.kind === 'all' || !account ? (

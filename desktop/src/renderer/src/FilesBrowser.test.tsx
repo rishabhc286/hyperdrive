@@ -14,7 +14,8 @@ const DRIVE: ConnectedAccount = {
   rootType: null,
   connectedAt: '2026-11-22T10:00:00Z',
   lastSuccessAt: null,
-  lastErrorCode: null
+  lastErrorCode: null,
+  contentReadGranted: true
 };
 const BOX: ConnectedAccount = {
   ...DRIVE,
@@ -223,7 +224,7 @@ describe('Files: navigation', () => {
   it('explains that opening files, documents and links is not implemented', async () => {
     await openFiles((m) =>
       m.storage.listFiles.mockResolvedValue(
-        page([file('id:f1', 'report.pdf', { mimeType: null }), file('id:l', 'Link', { kind: 'SHORTCUT', mimeType: null, sizeBytes: null })])
+        page([file('id:f1', 'report.pdf', { mimeType: null, canDownload: false }), file('id:l', 'Link', { kind: 'SHORTCUT', mimeType: null, sizeBytes: null })])
       )
     );
     await openAccount('Dropbox — box.owner@example.com');
@@ -231,6 +232,72 @@ describe('Files: navigation', () => {
     expect(screen.getByText(/Opening “report.pdf” isn’t implemented yet/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Link (Link)' }));
     expect(screen.getByText(/Following shortcuts and links isn’t implemented yet/)).toBeInTheDocument();
+  });
+
+  it('verify read shows only digest facts and sends a bounded request', async () => {
+    const mock = await openFiles((m) => {
+      m.storage.listFiles.mockResolvedValue(page([file('f1', 'movie.mkv', { sizeBytes: 10_000_000 })]));
+      m.storage.verifyFileRead.mockResolvedValue({
+        ok: true,
+        provider: 'GOOGLE_DRIVE',
+        offset: 0,
+        bytesRequested: 4194304,
+        bytesReceived: 4194304,
+        eof: false,
+        elapsedMs: 321,
+        sha256: 'ab'.repeat(32),
+        revisionPinned: false
+      });
+    });
+    await openAccount('Google Drive — drive.owner@example.com');
+    await userEvent.click(await screen.findByRole('button', { name: /^movie.mkv/ }));
+    const panel = screen.getByRole('region', { name: 'Verify file read' });
+    expect(within(panel).getByLabelText('Length (bytes, at most 4 MiB = 4,194,304)')).toHaveValue('4194304');
+    expect(panel).toHaveTextContent(/not opening or downloading the file/);
+
+    await userEvent.click(within(panel).getByRole('button', { name: 'Verify read' }));
+    expect(mock.storage.verifyFileRead).toHaveBeenCalledWith({ accountId: DRIVE.id, fileId: 'f1', offset: 0, length: 4194304 });
+    expect(await within(panel).findByText('ab'.repeat(32))).toBeInTheDocument();
+    expect(panel).toHaveTextContent(/4,194,304/);
+    expect(panel).toHaveTextContent(/321 ms/);
+    expect(panel).toHaveTextContent(/Not pinned/);
+    expect(document.body.textContent).not.toMatch(/mounted|cached on this PC: yes|playing/i);
+  });
+
+  it('verify read rejects lengths over 4 MiB without calling the bridge', async () => {
+    const mock = await openFiles((m) => m.storage.listFiles.mockResolvedValue(page([file('f1', 'big.bin', { sizeBytes: 10_000_000 })])));
+    await openAccount('Google Drive — drive.owner@example.com');
+    await userEvent.click(await screen.findByRole('button', { name: /^big.bin/ }));
+    const length = screen.getByLabelText(/Length \(bytes/);
+    await userEvent.clear(length);
+    await userEvent.type(length, '4194305');
+    expect(screen.getByRole('button', { name: 'Verify read' })).toBeDisabled();
+    expect(screen.getByText(/length from 1 to 4,194,304 bytes/)).toBeInTheDocument();
+    expect(mock.storage.verifyFileRead).not.toHaveBeenCalled();
+  });
+
+  it('verify read reports failures with a readable message', async () => {
+    await openFiles((m) => {
+      m.storage.listFiles.mockResolvedValue(page([file('f1', 'a.bin')]));
+      m.storage.verifyFileRead.mockResolvedValue({ ok: false, error: 'file-changed' });
+    });
+    await openAccount('Google Drive — drive.owner@example.com');
+    await userEvent.click(await screen.findByRole('button', { name: /^a.bin/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Verify read' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/changed since it was listed/);
+  });
+
+  it('does not offer verify read without the content permission or for unsized files', async () => {
+    const mock = await openFiles(
+      (m) => m.storage.listFiles.mockResolvedValue(page([file('id:f1', 'a.bin', { mimeType: null }), file('id:f2', 'b.bin', { mimeType: null, sizeBytes: null })])),
+      [DRIVE, { ...BOX, contentReadGranted: false }]
+    );
+    await openAccount('Dropbox — box.owner@example.com');
+    await userEvent.click(await screen.findByRole('button', { name: /^a.bin/ }));
+    expect(screen.getByText(/needs this account to be reconnected with read permission/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^b.bin/ }));
+    expect(screen.queryByRole('region', { name: 'Verify file read' })).not.toBeInTheDocument();
+    expect(mock.storage.verifyFileRead).not.toHaveBeenCalled();
   });
 
   it('without accounts, points to Cloud Accounts', async () => {

@@ -36,10 +36,26 @@ final class AgentHarness implements AutoCloseable {
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 
     AgentHarness(Duration bootstrapTimeout) throws IOException {
+        this(bootstrapTimeout, com.hyperdrive.agent.read.ProviderEndpoints.PRODUCTION, Duration.ofSeconds(30));
+    }
+
+    /** With test-only provider endpoints (local mock servers) and a short provider timeout. */
+    AgentHarness(Duration bootstrapTimeout, com.hyperdrive.agent.read.ProviderEndpoints endpoints, Duration providerTimeout)
+            throws IOException {
         PipedInputStream stdin = new PipedInputStream(stdinWriter, 64 * 1024);
         agent = new Agent(stdin, new PrintStream(stdout, true, StandardCharsets.UTF_8),
-                new PrintStream(stderr, true, StandardCharsets.UTF_8), Clock.systemUTC(), bootstrapTimeout);
+                new PrintStream(stderr, true, StandardCharsets.UTF_8), Clock.systemUTC(), bootstrapTimeout, endpoints,
+                d -> Thread.sleep(Math.min(d.toMillis(), 20)), providerTimeout);
         exit = CompletableFuture.supplyAsync(agent::run);
+    }
+
+    /** Authenticated JSON POST to the agent; returns the raw response (bytes). */
+    HttpResponse<byte[]> post(int port, String path, Object body) throws Exception {
+        HttpRequest r = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                .timeout(Duration.ofSeconds(20)).header("Authorization", "Bearer " + secret)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body))).build();
+        return http.send(r, HttpResponse.BodyHandlers.ofByteArray());
     }
 
     static String newSecret() {

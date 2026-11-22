@@ -90,11 +90,30 @@ public class ProviderCredentialStore {
 
     /** A usable access token, refreshing first if it is missing or about to expire. */
     public ProviderAccessToken accessToken(StorageProvider provider, UUID accountId) {
-        Row row = load(accountId, false).orElseThrow(() -> new ReconnectRequiredException("credentials_missing"));
-        if (row.accessExpiresAt().minus(EXPIRY_SKEW).isAfter(clock.instant())) {
-            return new ProviderAccessToken(decrypt(accountId, row.access(), row.keyVersion(), "access"));
+        return accessToken(provider, accountId, EXPIRY_SKEW).token();
+    }
+
+    /** An access token together with the provider-stated expiry recorded for it. */
+    public record ValidToken(ProviderAccessToken token, Instant expiresAt) {
+        @Override
+        public String toString() {
+            return "ValidToken[expiresAt=" + expiresAt + "]";
         }
-        return refresh(provider, accountId, null);
+    }
+
+    /**
+     * A token that stays valid for at least {@code minValidity} (refreshing first otherwise), e.g. for
+     * delegation to the local agent, which can't refresh by itself.
+     */
+    public ValidToken accessToken(StorageProvider provider, UUID accountId, Duration minValidity) {
+        Row row = load(accountId, false).orElseThrow(() -> new ReconnectRequiredException("credentials_missing"));
+        if (row.accessExpiresAt().minus(minValidity).isAfter(clock.instant())) {
+            return new ValidToken(new ProviderAccessToken(decrypt(accountId, row.access(), row.keyVersion(), "access")),
+                    row.accessExpiresAt());
+        }
+        ProviderAccessToken token = refresh(provider, accountId, null, minValidity);
+        Row after = load(accountId, false).orElseThrow(() -> new ReconnectRequiredException("credentials_missing"));
+        return new ValidToken(token, after.accessExpiresAt());
     }
 
     /**
@@ -102,12 +121,17 @@ public class ProviderCredentialStore {
      * token is still fresh and was not rejected), returns that token without calling Google.
      */
     public ProviderAccessToken refresh(StorageProvider provider, UUID accountId, ProviderAccessToken rejected) {
+        return refresh(provider, accountId, rejected, EXPIRY_SKEW);
+    }
+
+    private ProviderAccessToken refresh(StorageProvider provider, UUID accountId, ProviderAccessToken rejected,
+            Duration minValidity) {
         StorageOAuth client = oauth.get(provider);
         return tx.execute(status -> {
             jdbc.sql("SET LOCAL lock_timeout = '20s'").update();
             Row row = load(accountId, true).orElseThrow(() -> new ReconnectRequiredException("credentials_missing"));
             String current = decrypt(accountId, row.access(), row.keyVersion(), "access");
-            boolean fresh = row.accessExpiresAt().minus(EXPIRY_SKEW).isAfter(clock.instant());
+            boolean fresh = row.accessExpiresAt().minus(minValidity).isAfter(clock.instant());
             if (fresh && (rejected == null || !rejected.value().equals(current))) {
                 return new ProviderAccessToken(current);
             }

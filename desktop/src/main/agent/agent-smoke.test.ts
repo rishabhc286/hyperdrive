@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { AgentManager } from './agent-manager';
 import { resolveJava } from './java-discovery';
-import { agentHttpGet, checkJava, isFile, randomSecret, spawnAgent } from './node-runtime';
+import { agentHttpGet, agentHttpPost, checkJava, isFile, randomSecret, spawnAgent } from './node-runtime';
 
 /**
  * Real smoke test: the production AgentManager with real spawn, real Java and the real agent jar
@@ -30,6 +30,7 @@ describe.skipIf(!isFile(jar))('local agent smoke test (real Java process)', () =
       checkJava,
       spawn: spawnAgent,
       httpGet: agentHttpGet,
+      httpPost: agentHttpPost,
       randomSecret,
       startupTimeoutMs: 30_000
     });
@@ -40,7 +41,28 @@ describe.skipIf(!isFile(jar))('local agent smoke test (real Java process)', () =
     const ready = await manager.getStatus();
     expect(ready.state).toBe('ready');
     expect(ready.agentVersion).toBe('0.1.0-SNAPSHOT');
-    expect(ready.capabilities).toEqual({ providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false });
+    expect(ready.capabilities).toEqual({ providerReads: true, rangeReads: true, chunkCache: false, virtualDrive: false });
+
+    // Real credential + read endpoints of the real jar. A read at EOF needs no provider call, so this
+    // exercises the local binary transport without any network access.
+    const installed = await manager.post('/local/v1/credentials', {
+      provider: 'GOOGLE_DRIVE',
+      accountId: '11111111-2222-4333-8444-555555555555',
+      accessToken: 'ya29.smoke-test-not-a-real-token',
+      providerExpiresAt: new Date(Date.now() + 3_600_000).toISOString()
+    });
+    expect(installed.status).toBe(201);
+    const handle = (JSON.parse(new TextDecoder().decode(installed.body)) as { handle: string }).handle;
+    const eofRead = await manager.post('/local/v1/reads', { handle, fileId: 'abc123', offset: 10, length: 100, expectedSize: 10 });
+    expect(eofRead.status).toBe(200);
+    expect(eofRead.headers['content-type']).toBe('application/octet-stream');
+    expect(eofRead.body.byteLength).toBe(0);
+    expect(eofRead.headers['x-hyperdrive-eof']).toBe('true');
+    const tooBig = await manager.post('/local/v1/reads', { handle, fileId: 'abc123', offset: 0, length: 4 * 1024 * 1024 + 1, expectedSize: 10 });
+    expect(tooBig.status).toBe(400);
+    const cleared = await manager.post('/local/v1/credentials/clear', {});
+    expect(JSON.parse(new TextDecoder().decode(cleared.body))).toEqual({ cleared: 1 });
+    expect(manager.log.snapshot().join('\n')).not.toContain('ya29.smoke-test');
     expect(ready.uptimeMillis).toBeGreaterThanOrEqual(0);
 
     // A second manager on the same data directory is refused by the agent's lock.
