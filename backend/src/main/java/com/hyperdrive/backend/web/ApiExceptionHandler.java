@@ -27,7 +27,13 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ProblemDetail> handleApi(ApiException ex) {
-        return respond(ex.status(), ex.code(), ex.getMessage());
+        ResponseEntity<ProblemDetail> response = respond(ex.status(), ex.code(), ex.getMessage());
+        if (ex.retryAfter() != null) {
+            return ResponseEntity.status(response.getStatusCode()).headers(response.getHeaders())
+                    .header(HttpHeaders.RETRY_AFTER, Long.toString(Math.max(1, ex.retryAfter().toSeconds())))
+                    .body(response.getBody());
+        }
+        return response;
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

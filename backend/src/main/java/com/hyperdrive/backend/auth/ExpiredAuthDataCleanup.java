@@ -31,6 +31,8 @@ public class ExpiredAuthDataCleanup {
         jdbc.sql("DELETE FROM access_tokens WHERE expires_at <= :now").param("now", now).update();
         jdbc.sql("DELETE FROM login_transactions WHERE expires_at <= :cutoff")
                 .param("cutoff", now.minusHours(1)).update();
+        jdbc.sql("DELETE FROM storage_connection_transactions WHERE expires_at <= :cutoff")
+                .param("cutoff", now.minusHours(1)).update();
         jdbc.sql("""
                 DELETE FROM device_sessions
                 WHERE (revoked_at IS NOT NULL AND revoked_at <= :cutoff) OR expires_at <= :cutoff

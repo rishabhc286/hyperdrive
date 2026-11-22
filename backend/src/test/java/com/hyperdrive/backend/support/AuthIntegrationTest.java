@@ -32,6 +32,8 @@ public abstract class AuthIntegrationTest {
     public static final String CLIENT_ID = "test-client-id.apps.googleusercontent.com";
     /** MockMvc requests default to http://localhost; the redirect URI must match it exactly. */
     public static final String PUBLIC_BASE_URL = "http://localhost";
+    /** Test-only key: 32 bytes of 0x01, base64. */
+    public static final String TEST_CREDENTIAL_KEY = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18-alpine");
     protected static FakeOidcProvider google;
@@ -53,6 +55,11 @@ public abstract class AuthIntegrationTest {
         // Point the "google" registration at the fake provider via standard OIDC discovery.
         registry.add("spring.security.oauth2.client.provider.google.issuer-uri", google::issuer);
         registry.add("hyperdrive.rate-limit.enabled", () -> "false");
+        // Storage: a fixed test-only AES key (never used outside tests), the fake Drive API, fast retries.
+        registry.add("HYPERDRIVE_CREDENTIAL_KEY", () -> TEST_CREDENTIAL_KEY);
+        registry.add("hyperdrive.storage.drive-api-base-url", google::driveApiBaseUrl);
+        registry.add("hyperdrive.storage.retry-base-delay", () -> "1ms");
+        registry.add("hyperdrive.storage.max-retry-delay", () -> "50ms");
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -79,6 +86,7 @@ public abstract class AuthIntegrationTest {
     void resetState() {
         jdbc.sql("TRUNCATE users, login_transactions CASCADE").update();
         mutableClock().reset();
+        google.resetDrive();
     }
 
     protected long count(String table) {

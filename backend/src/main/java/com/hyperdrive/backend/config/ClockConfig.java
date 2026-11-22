@@ -8,7 +8,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
-@EnableConfigurationProperties({AuthProperties.class, RateLimitProperties.class})
+@EnableConfigurationProperties({AuthProperties.class, RateLimitProperties.class, StorageProperties.class})
 public class ClockConfig {
 
     /** Single time source so expiry logic is testable; all timestamps are written from it. */

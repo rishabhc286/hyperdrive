@@ -1,8 +1,9 @@
 # HyperDrive architecture
 
 Status labels: **Implemented** (exists and is tested in this repository) and **Planned** (designed,
-not built). Implemented today: the desktop shell, backend health/readiness, and Google sign-in
-with HyperDrive accounts and device sessions (Batch 2).
+not built). Implemented today: the desktop shell, backend health/readiness, Google sign-in
+with HyperDrive accounts and device sessions (Batch 2), and Google Drive connection with
+read-only metadata browsing through the backend (Batch 3).
 
 ## Components
 
@@ -56,7 +57,23 @@ provider range requests, own the local chunk cache, hold device credentials, and
 C++ WinFsp filesystem (`vfs/`) that mounts the read-only drive and forwards every request to the
 local agent.
 
-### Remote backend: implemented (health, readiness, accounts)
+### Cloud storage (Batch 3): implemented for Google Drive metadata
+
+- **Flow:** the desktop asks the backend to start a Drive connection. The backend runs Google's
+  consent with `drive.readonly`, stores the Google tokens **encrypted on the backend**, and
+  serves folder listings through `/api/v1/accounts/{id}/files`.
+- **Provider abstraction:** a small `FileBrowser` interface (root, list children, get file),
+  implemented by `GoogleDriveBrowser`. It returns application-owned `ProviderFile` metadata, so
+  Drive wire models stay inside the adapter. OAuth orchestration (`storage/connect`) is
+  separate from browsing (`storage/files`).
+- **What's stored:** listings are fetched on demand and not stored.
+- **Not built:** content transfer, caching and Dropbox. They come in later batches through the
+  same abstraction. See [google-drive.md](google-drive.md).
+- **Token location, for now:** in this batch provider tokens live on the backend. Where they
+  should live once the local agent streams content (device-held credentials, per the agent
+  plan below) is an open design decision for that batch.
+
+### Remote backend: implemented (health, readiness, accounts, storage connections)
 
 Spring Boot service (`backend/`). Without the `auth` profile it serves only liveness and readiness
 and needs no database. With `SPRING_PROFILES_ACTIVE=auth` it adds:
@@ -69,10 +86,14 @@ See [authentication.md](authentication.md). Planned: cloud-connection metadata. 
 
 ### PostgreSQL: implemented for accounts
 
-Provided by `compose.yaml` for development, and required in auth mode. It stores users, Google
-identities (issuer + subject), device sessions, login transactions, and token **hashes**, in a
-Flyway-managed schema. Planned: connected-account records and metadata. It will **not** store
-file contents, and it stores no Google tokens.
+Provided by `compose.yaml` for development, and required in auth mode, with a Flyway-managed
+schema.
+- **Sign-in data:** users, Google sign-in identities (issuer + subject), device sessions, login
+  transactions, and token **hashes**.
+- **Storage data (Batch 3):** connected storage accounts, storage authorization transactions,
+  and Google Drive tokens **encrypted** with AES-256-GCM, with the key kept outside the
+  database.
+- **Not stored:** file contents, and file listings.
 
 ### Redis: optional, planned use
 
@@ -87,10 +108,12 @@ user's machine, in the agent's cache directory. They will **not** be stored in R
 
 ## Sign-in is not storage access
 
-Google sign-in establishes a HyperDrive identity only. Connecting Google Drive or Dropbox will be
-a separate flow with its own consent, scopes and token storage. Disconnecting a storage account
-will never delete the HyperDrive account, and a user can connect Dropbox without connecting
-Google Drive.
+- **Sign-in:** establishes a HyperDrive identity only.
+- **Connecting Google Drive (implemented):** a separate flow with its own consent, scopes,
+  callback and encrypted token storage. It may use a different Google account.
+- **Disconnecting:** never deletes the HyperDrive account or the remote files, and doesn't sign
+  the user out.
+- **Dropbox:** will follow the same model.
 
 ## Desktop security
 
@@ -99,15 +122,19 @@ Implemented in `desktop/src/main` and covered by unit tests plus manual end-to-e
 
 - **Window settings:** `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`,
   `webSecurity: true`, `webviewTag: false`.
-- **Preload bridge:** it exposes `window.hyperdrive.checkBackendHealth()` and
+- **Preload bridge:** it exposes `window.hyperdrive.checkBackendHealth()`,
   `window.hyperdrive.auth` (`getStatus`, `signInWithGoogle`, `cancelSignIn`,
-  `completeOnboarding({ username })`, `signOut`, `retry`, `onStatusChange`). None of them accepts a
-  URL or returns a token. Raw `ipcRenderer`, filesystem, shell and URL-opening APIs are not
+  `completeOnboarding({ username })`, `signOut`, `retry`, `onStatusChange`) and
+  `window.hyperdrive.storage` (`listAccounts`, `beginGoogleConnection`,
+  `getConnectionStatus({ transactionId })`, `cancelConnection({ transactionId })`,
+  `listFiles({ accountId, parentId, pageToken })`, `getFileMetadata({ accountId, fileId })`,
+  `disconnectAccount({ accountId })`). None of them accepts a URL or returns a token. Raw `ipcRenderer`, filesystem, shell and URL-opening APIs are not
   exposed.
 - **IPC handlers:** they answer only the app's own window and main frame, at the trusted renderer
   URL. They reject unexpected arguments; onboarding accepts exactly `{ username: string }`.
-- **System browser:** only main-process sign-in code can open it, and only for the trusted
-  backend's `/api/v1/auth/desktop/authorize/<uuid>` URL.
+- **System browser:** only main-process sign-in and storage code can open it, and only for the
+  trusted backend's `/api/v1/auth/desktop/authorize/<uuid>` or
+  `/api/v1/storage-connections/google/authorize/hds_<ticket>` URL.
 - **Backend address:** it comes only from `HYPERDRIVE_BACKEND_URL` in the main process, and must be
   an http(s) origin with no credentials, path, query or fragment. Requests use a timeout and
   `redirect: 'error'`, and failures become an "unavailable" state, never a crash.

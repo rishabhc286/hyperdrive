@@ -17,5 +17,13 @@ public record RateLimitProperties(
         @DefaultValue("20") int exchange,
         @DefaultValue("30") int refresh,
         @DefaultValue("10") int onboarding,
+        /** Starting a storage connection. */
+        @DefaultValue("10") int storageTransactions,
+        /** Storage browser leg: ticket start and Google callback. */
+        @DefaultValue("20") int storageBrowser,
+        /** Connection status polling (the desktop polls every 2 s) and cancel. */
+        @DefaultValue("60") int storageStatus,
+        /** Account and file-browsing API calls. */
+        @DefaultValue("300") int browse,
         @DefaultValue("10000") int maxTrackedClients) {
 }

@@ -24,7 +24,7 @@ describe('signed-in shell', () => {
 
   it('keeps the honest empty state and never implies Drive is connected', async () => {
     await renderSignedIn();
-    expect(screen.getByText('No cloud accounts connected.')).toBeInTheDocument();
+    expect(await screen.findByText('No cloud accounts connected.')).toBeInTheDocument();
     expect(screen.queryByText(/mounted/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/drive connected/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\d+(\.\d+)?\s?(MB|GB|MiB|GiB)\/s/)).not.toBeInTheDocument();
@@ -119,18 +119,23 @@ describe('sidebar navigation', () => {
     await renderSignedIn();
     await userEvent.click(nav().getByRole('button', { name: 'Settings' }));
     expect(screen.getByText('@Test_User', { selector: 'dd' })).toBeInTheDocument();
-    expect(screen.getByText(/identity only, no Drive access/)).toBeInTheDocument();
+    expect(screen.getByText(/sign-in identity only; Drive is connected separately/)).toBeInTheDocument();
   });
 });
 
 describe('cloud account connection buttons', () => {
-  it.each(['Connect Google Drive', 'Connect Dropbox'])('"%s" is disabled and explains why', async (name) => {
+  it('"Connect Google Drive" is available (Batch 3)', async () => {
     await renderSignedIn();
     await userEvent.click(screen.getByRole('button', { name: 'Cloud Accounts' }));
+    expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled();
+    expect(screen.getByText(/separate from signing in to HyperDrive/)).toBeInTheDocument();
+  });
 
-    const button = screen.getByRole('button', { name });
+  it('"Connect Dropbox" stays disabled and explains why', async () => {
+    await renderSignedIn();
+    await userEvent.click(screen.getByRole('button', { name: 'Cloud Accounts' }));
+    const button = screen.getByRole('button', { name: 'Connect Dropbox' });
     expect(button).toBeDisabled();
     expect(button).toHaveAccessibleDescription(/later development batch/);
-    expect(button).toHaveAccessibleDescription(/does not connect your Google Drive/);
   });
 });

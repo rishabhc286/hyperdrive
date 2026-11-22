@@ -1,5 +1,10 @@
 import type { ReactNode } from 'react';
 import type { SafeUser } from '../../shared/auth';
+import type { StorageApi } from '../../shared/storage';
+import { CloudAccounts } from './CloudAccounts';
+import { FilesBrowser } from './FilesBrowser';
+import { accountLabel } from './storage-format';
+import type { AccountsState, ConnectionFlow } from './useStorage';
 import type { BackendStatus } from './useBackendHealth';
 
 export const SECTIONS = [
@@ -18,6 +23,13 @@ interface SectionViewProps {
   readonly backendStatus: BackendStatus;
   readonly onRecheckBackend: () => void;
   readonly onNavigate: (section: SectionId) => void;
+  readonly storage: StorageApi;
+  readonly accounts: AccountsState;
+  readonly onReloadAccounts: () => void;
+  readonly connection: ConnectionFlow;
+  readonly onConnect: () => void;
+  readonly onCancelConnection: () => void;
+  readonly onDismissConnection: () => void;
 }
 
 export function SectionView(props: SectionViewProps) {
@@ -25,9 +37,26 @@ export function SectionView(props: SectionViewProps) {
     case 'overview':
       return <Overview {...props} />;
     case 'files':
-      return <Files />;
+      return (
+        <FilesBrowser
+          storage={props.storage}
+          accounts={props.accounts}
+          onReloadAccounts={props.onReloadAccounts}
+          onOpenAccounts={() => props.onNavigate('accounts')}
+        />
+      );
     case 'accounts':
-      return <CloudAccounts />;
+      return (
+        <CloudAccounts
+          storage={props.storage}
+          accounts={props.accounts}
+          onReloadAccounts={props.onReloadAccounts}
+          connection={props.connection}
+          onConnect={props.onConnect}
+          onCancelConnection={props.onCancelConnection}
+          onDismissConnection={props.onDismissConnection}
+        />
+      );
     case 'performance':
       return <Performance />;
     case 'settings':
@@ -36,11 +65,9 @@ export function SectionView(props: SectionViewProps) {
 }
 
 const NO_ACCOUNTS = 'No cloud accounts connected.';
-const LATER_BATCH_NOTE =
-  'Connecting cloud storage is not available yet; it arrives in a later development batch. ' +
-  'Signing in to HyperDrive with Google does not connect your Google Drive.';
 
-function Overview({ user, backendStatus, onRecheckBackend, onNavigate }: SectionViewProps) {
+function Overview({ user, backendStatus, onRecheckBackend, onNavigate, accounts }: SectionViewProps) {
+  const connected = accounts.accounts;
   return (
     <section aria-labelledby="overview-title">
       <h1 id="overview-title">Overview</h1>
@@ -61,8 +88,26 @@ function Overview({ user, backendStatus, onRecheckBackend, onNavigate }: Section
 
         <article className="card" aria-labelledby="accounts-card-title">
           <h2 id="accounts-card-title">Cloud accounts</h2>
-          <p className="empty-title">{NO_ACCOUNTS}</p>
-          <p className="muted">Google Drive and Dropbox support is planned for the first release.</p>
+          {connected.length === 0 ? (
+            <>
+              <p className="empty-title">{accounts.status === 'loading' ? 'Loading…' : NO_ACCOUNTS}</p>
+              <p className="muted">Connect Google Drive to browse it here (read-only). Dropbox arrives later.</p>
+            </>
+          ) : (
+            <>
+              <p>
+                {connected.length} Google Drive {connected.length === 1 ? 'account' : 'accounts'} connected (read-only).
+              </p>
+              <ul className="small">
+                {connected.map((a) => (
+                  <li key={a.id}>
+                    {accountLabel(a)}
+                    {a.status === 'NEEDS_RECONNECT' ? ' (needs reconnect)' : ''}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           <button type="button" className="button button-secondary" onClick={() => onNavigate('accounts')}>
             View Cloud Accounts
           </button>
@@ -110,45 +155,6 @@ function EmptyState({ title, children }: { title: string; children: ReactNode })
   );
 }
 
-function Files() {
-  return (
-    <section aria-labelledby="files-title">
-      <h1 id="files-title">Files</h1>
-      <EmptyState title="No files to show.">
-        <p>
-          Files from connected cloud accounts will appear here. There are no connected accounts, and
-          file browsing is not implemented in this build.
-        </p>
-      </EmptyState>
-    </section>
-  );
-}
-
-function CloudAccounts() {
-  return (
-    <section aria-labelledby="accounts-title">
-      <h1 id="accounts-title">Cloud Accounts</h1>
-      <EmptyState title={NO_ACCOUNTS}>
-        <p id="connect-unavailable-note">{LATER_BATCH_NOTE}</p>
-      </EmptyState>
-      <ul className="providers" aria-label="Cloud storage providers">
-        <li className="provider">
-          <span className="provider-name">Google Drive</span>
-          <button type="button" className="button" disabled aria-describedby="connect-unavailable-note">
-            Connect Google Drive
-          </button>
-        </li>
-        <li className="provider">
-          <span className="provider-name">Dropbox</span>
-          <button type="button" className="button" disabled aria-describedby="connect-unavailable-note">
-            Connect Dropbox
-          </button>
-        </li>
-      </ul>
-    </section>
-  );
-}
-
 function Performance() {
   return (
     <section aria-labelledby="performance-title">
@@ -177,7 +183,7 @@ function Settings({ user, backendStatus }: { user: SafeUser; backendStatus: Back
         <dt>Name</dt>
         <dd>{user.displayName ?? "Not provided"}</dd>
         <dt>Signed in with</dt>
-        <dd>Google (identity only, no Drive access)</dd>
+        <dd>Google (sign-in identity only; Drive is connected separately in Cloud Accounts)</dd>
       </dl>
       <h2 className="subheading">About this build</h2>
       <dl className="facts">

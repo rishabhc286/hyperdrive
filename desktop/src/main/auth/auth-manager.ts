@@ -35,7 +35,8 @@ export interface AuthManagerDeps {
 
 type RefreshOutcome = 'ok' | 'expired' | 'unreachable';
 
-class SessionExpiredError extends Error {
+/** The HyperDrive session ended (refresh rejected); AuthManager already switched to session-expired. */
+export class SessionExpiredError extends Error {
   constructor() {
     super('Session expired');
   }
@@ -203,8 +204,9 @@ export class AuthManager {
   /**
    * Runs an authenticated call. Refreshes first if the access token is missing or about to expire,
    * and once more after a 401. Refreshes are single-flight, so parallel 401s cause one refresh.
+   * Public for other main-process services (cloud storage); the token never leaves the main process.
    */
-  private async withAccessToken<T>(call: (accessToken: string) => Promise<T>): Promise<T> {
+  async withAccessToken<T>(call: (accessToken: string) => Promise<T>): Promise<T> {
     const token = await this.currentAccessToken();
     try {
       return await call(token);

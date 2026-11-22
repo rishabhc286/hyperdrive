@@ -5,9 +5,11 @@ HyperDrive is a Windows desktop application, in early development, that will bri
 Files will stream on demand in 4 MiB chunks and be cached on the local disk, so they don't need
 to be downloaded in full first.
 
-> **Status: accounts only.** You can sign in with Google, which creates a HyperDrive account,
-> and choose a username. There is **no cloud-storage connection, file browsing, virtual drive or
-> caching yet**. Signing in does **not** connect Google Drive. See [docs/progress.md](docs/progress.md).
+> **Status: accounts + read-only Google Drive browsing.** You can sign in with Google (which
+> creates a HyperDrive account), choose a username, then **separately** connect a Google Drive
+> account and browse its folders and file metadata. There is **no file download, streaming,
+> caching, virtual drive or Dropbox yet**. Live Google Drive use has not been tested with real
+> credentials yet. See [docs/progress.md](docs/progress.md).
 
 The launch website is a separate project and is not part of this repository.
 
@@ -24,14 +26,27 @@ The launch website is a separate project and is not part of this repository.
   - The desktop stores sessions with OS encryption (Electron `safeStorage`).
   - Sign-out revokes the session on the server when it can be reached.
 
+- **Batch 3 (Google Drive, read-only browsing):**
+  - "Connect Google Drive" is a separate consent flow from sign-in. It requests
+    `drive.readonly` (a restricted scope), and any Google account can be connected, including a
+    different one from the sign-in account.
+  - Google tokens stay on the backend, encrypted with AES-256-GCM. They never reach the desktop.
+  - Browse My Drive folders with pagination, see real metadata (type, size, modified time), and
+    disconnect without signing out.
+
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
+[docs/google-drive.md](docs/google-drive.md) ·
 [docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
 
 ## Not implemented yet
 
-- Connecting Google Drive or Dropbox, file browsing, the local agent (`agent/`), and the WinFsp
-  virtual drive (`vfs/`).
+- Dropbox, Shared drives / "Shared with me", opening or downloading files, exporting Google Docs,
+  following shortcuts.
+- The local agent (`agent/`) and the WinFsp virtual drive (`vfs/`).
 - Streaming, caching and metrics.
+- Google OAuth verification: `drive.readonly` is a restricted scope. HyperDrive is unverified
+  and runs in Google's Testing mode, with at most 100 test users and a 7-day authorization expiry.
+  See [docs/google-drive.md](docs/google-drive.md).
 - Username editing, and a device list or "sign out everywhere".
 - Installer/packaging, and production deployment hardening (proxy/HTTPS support).
 
@@ -92,6 +107,9 @@ profile. Nothing simulates a login.
    $env:GOOGLE_CLIENT_ID = "<client id>"
    $env:GOOGLE_CLIENT_SECRET = "<client secret>"
    $env:HYPERDRIVE_PUBLIC_BASE_URL = "http://127.0.0.1:18080"
+   # Encrypts stored Google Drive tokens. 32 random bytes, base64 (generate once, keep it safe):
+   $b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+   $env:HYPERDRIVE_CREDENTIAL_KEY = [Convert]::ToBase64String($b)   # store this value; reuse it next time
    .\mvnw.cmd spring-boot:run
    ```
 4. Desktop (window 2):
@@ -100,6 +118,10 @@ profile. Nothing simulates a login.
    npm run dev
    ```
 5. Click **Continue with Google**, finish in the browser, then choose a username.
+6. Optional: **Cloud Accounts → Connect Google Drive**. This first needs the Drive API enabled
+   and the redirect URI `http://127.0.0.1:18080/api/v1/storage-connections/google/callback`
+   added to the same OAuth client; see [docs/google-drive.md](docs/google-drive.md#google-cloud-setup).
+   Then browse it under **Files**.
 
 To run the built app instead of the dev server: `npm run build`, then `npm start`.
 
@@ -127,6 +149,10 @@ not passed).
 | App says "Sign-in isn't enabled" | Start the backend with `$env:SPRING_PROFILES_ACTIVE = "auth"` (and the other variables above). |
 | App says "HyperDrive isn't ready" | The backend can't reach PostgreSQL. Check `docker compose ps`, `HYPERDRIVE_DB_URL` (port!) and `HYPERDRIVE_DB_PASSWORD`. |
 | Backend fails with `Client id of registration 'google' must not be empty` | Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the backend window. |
+| Backend fails with `HYPERDRIVE_CREDENTIAL_KEY is not set` / `must decode to exactly 32 bytes` | Generate a key as shown in step 3, and use the **same** key every time. A different key makes stored Drive connections unreadable, so you would have to reconnect. |
+| "Connect Google Drive" → Google shows `redirect_uri_mismatch` | Add `<HYPERDRIVE_PUBLIC_BASE_URL>/api/v1/storage-connections/google/callback` to the OAuth client's redirect URIs. |
+| Google Drive account shows **Needs reconnect** | The grant was revoked or expired. In Google's Testing mode authorizations expire after 7 days. Click **Reconnect**. |
+| Files says Google Drive "could not be reached" | Enable the **Google Drive API** in the Cloud project, and check network access to `www.googleapis.com`. |
 | Backend fails with `Google redirect URI must be …` or `HYPERDRIVE_PUBLIC_BASE_URL must be …` | Set `HYPERDRIVE_PUBLIC_BASE_URL` to an origin such as `http://127.0.0.1:18080`. |
 | Google shows `redirect_uri_mismatch` | The redirect URI in Google Cloud Console must equal `<HYPERDRIVE_PUBLIC_BASE_URL>/login/oauth2/code/google` exactly. |
 | Google shows "Access blocked: app not verified / not a test user" | Add your Google account as a test user on the OAuth consent screen. |
@@ -140,7 +166,8 @@ not passed).
 ## Repository layout
 
 ```
-backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions
+backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions,
+            Google Drive connections and read-only browsing
 desktop/    Electron + React desktop app
 agent/      Planned local agent (README only)
 vfs/        Planned WinFsp virtual drive (README only)

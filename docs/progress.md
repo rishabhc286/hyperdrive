@@ -1,5 +1,149 @@
 # Progress
 
+## Batch 3: Google Drive connection, encrypted credentials, read-only browsing (2026-11-22)
+
+### Foundation check before starting
+
+- **Batch 2 re-verified unchanged:** `mvnw verify` gave 111 tests, 0 skipped; desktop
+  typecheck, lint and 110 tests passed.
+- **Blockers:** none found, so nothing in the sign-in/onboarding foundation had to be fixed.
+
+### Completed
+
+- **Separate Google Drive consent:**
+  - Its own Spring client registration (`google-drive`), callback, scopes
+    (`openid email profile drive.readonly`), `access_type=offline` and
+    `prompt=select_account consent`.
+  - It can connect a Google account different from the sign-in account. It never creates or
+    changes a HyperDrive login.
+- **Connection transactions:**
+  - Bound to the user, device session, provider and expiry. The browser leg uses a one-time
+    hashed ticket.
+  - Hashed OAuth state and a browser-binding cookie, PKCE with an encrypted verifier, and an
+    atomic single-use callback.
+  - Cancel, supersede and expire. Status and cancel are visible only to the owner.
+- **Validation:**
+  - Code exchange uses Spring's token client; the ID token is checked by Spring's
+    `OidcIdTokenValidator` plus a nonce check.
+  - The connection fails if the Drive scope wasn't granted.
+  - My Drive's root ID is resolved through `files.get('root')`.
+- **Credentials:** AES-256-GCM encryption (JDK) with a key from `HYPERDRIVE_CREDENTIAL_KEY`,
+  a key version and previous keys for rotation. Startup fails when the key is missing or
+  malformed.
+- **Refresh:** server-side, serialized per account with a row lock, and keeps the old refresh
+  token when Google omits a new one. `invalid_grant` gives `NEEDS_RECONNECT` without erasing
+  credentials. One refresh-and-retry on a 401.
+- **Provider abstraction:** `FileBrowser` plus application-owned `ProviderFile`
+  (FILE / FOLDER / SHORTCUT / PROVIDER_DOCUMENT). The Google Drive v3 adapter has explicit
+  `fields`, `trashed = false`, query escaping, bounded retries with backoff and Retry-After, and
+  classified 403s.
+- **API:** `/api/v1/storage-connections/...` and `/api/v1/accounts[/{id}[/files[/{fileId}]]]`,
+  with ownership checked before any provider call, page size bounded to 200, and sanitized
+  error codes. Rate limits for the new endpoints.
+- **Disconnect:** deletes the link and credentials only. No Google revocation; the docs explain
+  why.
+- **Desktop:**
+  - A `StorageManager` in the main process: validated authorize URL, polls only its own
+    attempts, aborts that account's requests on disconnect, strict response parsers.
+  - Validated storage IPC and a narrow `window.hyperdrive.storage` bridge.
+  - **Cloud Accounts** page: connect, waiting with Cancel (server-side), and
+    failed/cancelled/expired/"stopped waiting" states. It shows the real account identity,
+    Needs-reconnect with Reconnect, and Disconnect with confirmation. Dropbox stays disabled.
+  - **Files** page: an account selector, breadcrumbs, folder open, Load more, Refresh, and
+    loading/empty/error/reconnect states. Type, size (only when known) and modified columns,
+    an honest "nothing is cached" note, explanations for unsupported opens, and stale-response
+    protection.
+- **Database:** Flyway `V2__storage_connections.sql` with `connected_accounts`,
+  `provider_credentials` and `storage_connection_transactions`.
+- **Docs:**
+  - New: [google-drive.md](google-drive.md).
+  - Updated: README, architecture, development, security, authentication (pointer) and
+    `.env.example`.
+
+### Foundation changes (separate from new features)
+
+- **Browser pages:** `BrowserPages` is now public and HTML-escapes its title and message. A
+  sign-in test assertion was updated for the escaped apostrophe (`can&#39;t`).
+- **Errors:** `ApiException` can carry `Retry-After`, which the handler sends as a header.
+- **Desktop session helper:** `AuthManager.withAccessToken` is now public, so the main-process
+  storage code reuses the session, refresh and 401 handling. `SessionExpiredError` is exported.
+- **Updated tests:** Batch 1/2 renderer assertions that expected Connect Google Drive to be
+  disabled, and the old Settings wording, were updated deliberately. The migration test now
+  expects V1 + V2.
+
+### Defects found during this batch and fixed
+
+- **PostgreSQL regex limit:** the first migration draft used the regex `{1,256}`, but
+  PostgreSQL caps repetition counts at 255. Every connection insert failed, which the
+  integration tests caught. The CHECK now uses `+` plus the column length.
+- **Flaky renderer test:** the connection-flow test was timing-dependent with 5 ms polling and
+  failed once in a full run. It now completes the attempt only after asserting the waiting
+  state; it then passed 3 isolated runs and the full suite.
+
+### Checks executed (Windows 11, Docker 29.7.2, JDK 25.0.5, Node 24.19.0)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend unit + integration tests | `.\mvnw.cmd verify` | **Passed**: 176 tests, 0 failures, **0 skipped** (PostgreSQL 18 via Testcontainers) |
+| Desktop type check / lint | `npm run typecheck`, `npm run lint` | **Passed** |
+| Desktop tests | `npm test` | **Passed**: 156 tests in 12 files |
+| Desktop build | `npm run build` | **Passed**; no token-format strings in the renderer bundle |
+| Migration on Compose PostgreSQL 18 | Backend start with `auth` profile | **Passed**: V2 applied; a later start was "up to date" |
+| Missing credential key | Start with `auth` profile and no `HYPERDRIVE_CREDENTIAL_KEY` | **Fails fast**: "HYPERDRIVE_CREDENTIAL_KEY is not set…" |
+| Real Google consent URL | Running backend, temporary local test user (deleted afterwards), placeholder client ID | **Passed** (details below) |
+| Logs | grep test and manual-run logs for tokens, tickets, emails, file names | **None found** |
+
+Real Google consent URL check:
+- The create call returned **201** with `Cache-Control: no-store`.
+- The ticket URL redirected (302) to `accounts.google.com/o/oauth2/v2/auth` with scope
+  `openid email profile …/drive.readonly`, the storage callback as redirect URI,
+  `access_type=offline`, `prompt=select_account consent`, S256 PKCE, state and nonce.
+- The binding cookie was `HttpOnly; SameSite=Lax` and path-scoped.
+- Rejected as intended: reusing the ticket (400), a forged callback (400) and an
+  unauthenticated create (401).
+
+Mutation checks confirm the tests can fail. Each mutation was reverted:
+- Ownership filter removed → the cross-user test failed.
+- Old refresh token not kept on reconnect → the reconnect test failed.
+- Callback replay allowed → the replay test failed.
+- Refresh not serialized → the concurrency test failed.
+- Renderer stale-response guard removed → the stale-folder test failed.
+
+### Requires manual verification (not executed)
+
+- **Live Google Drive connection and real Drive browsing:** no real OAuth client was available.
+  This covers consent with a different Google account, real listings and pagination, native
+  documents and shortcuts, token refresh after an hour, and revocation at Google. Follow the
+  [manual QA](google-drive.md#manual-qa-requires-real-google-credentials).
+- **Electron with the new pages:** the Cloud Accounts and Files pages were not viewed in a real
+  Electron window, because that needs a real signed-in session. They are covered by jsdom
+  tests only.
+- **Google's live behavior:** whether Google returns `scope` and a refresh token exactly as
+  assumed on repeat consent, and the Testing-mode 7-day expiry.
+
+### Known limitations
+
+- **Restricted scope:** `drive.readonly` is restricted. The app is unverified with no CASA
+  assessment, and Testing mode allows at most 100 test users with a 7-day authorization expiry.
+  Not fit for public distribution.
+- **Forwarded connection link:** a forwarded authorize link (2-minute ticket) could connect a
+  victim's Drive to the sender's HyperDrive account if the victim approves consent. Mitigation
+  (loopback confirmation) is not implemented; see [security.md](security.md).
+- **Browsing scope:** My Drive only. No Shared drives, "Shared with me", search, opening,
+  export, shortcut resolution, downloads, caching or Dropbox.
+- **Disconnect:** does not revoke the Google grant; the user removes access at Google.
+- **Single instance:** rate limits are in memory. Refresh serialization *is* safe across
+  instances (row lock).
+- **Key rotation:** lazy only (re-encrypts on refresh or reconnect); there is no bulk tool.
+- **Refresh-token limit:** Google keeps 100 refresh tokens per account per client, and older
+  connections can be invalidated silently.
+
+### Next suggested batch
+
+Dropbox through the same `FileBrowser` abstraction, or the local agent's first read path (4 MiB
+range reads for one Drive file). Decide first where provider credentials should live once the
+agent streams content.
+
 ## Batch 2: Google sign-in, accounts, onboarding, desktop sessions (2026-11-21)
 
 ### Completed

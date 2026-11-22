@@ -10,6 +10,7 @@ import {
   type IpcMainInvokeEvent
 } from 'electron';
 import { AuthIpcChannel } from '../shared/auth';
+import { StorageIpcChannel } from '../shared/storage';
 import { IpcChannel, type BackendHealth } from '../shared/backend-health';
 import { AuthManager, isTrustedAuthorizeUrl } from './auth/auth-manager';
 import { BackendApi } from './auth/backend-api';
@@ -18,7 +19,15 @@ import { createTokenStore } from './auth/token-store';
 import { checkBackendHealth } from './backend-health';
 import { resolveBackendUrl } from './config';
 import { deviceName } from './device-name';
-import { expectNoArgs, parseOnboardingPayload } from './ipc-validation';
+import {
+  expectNoArgs,
+  parseAccountPayload,
+  parseFileMetadataPayload,
+  parseListFilesPayload,
+  parseOnboardingPayload,
+  parseTransactionPayload
+} from './ipc-validation';
+import { isTrustedStorageAuthorizeUrl, StorageManager } from './storage/storage-manager';
 import { isTrustedRendererUrl, type RendererOrigin } from './security';
 
 // Set by electron-vite only while running `npm run dev`.
@@ -111,7 +120,7 @@ function handleTrusted(channel: string, handler: (args: unknown[]) => unknown): 
   });
 }
 
-function registerIpc(auth: AuthManager): void {
+function registerIpc(auth: AuthManager, storage: StorageManager): void {
   handleTrusted(IpcChannel.backendHealth, async (args): Promise<BackendHealth> => {
     expectNoArgs(IpcChannel.backendHealth, args);
     if (!backendUrl.ok) {
@@ -146,13 +155,52 @@ function registerIpc(auth: AuthManager): void {
     await auth.initialize();
   });
 
+  handleTrusted(StorageIpcChannel.listAccounts, (args) => {
+    expectNoArgs(StorageIpcChannel.listAccounts, args);
+    return storage.listAccounts();
+  });
+  handleTrusted(StorageIpcChannel.beginGoogleConnection, (args) => {
+    expectNoArgs(StorageIpcChannel.beginGoogleConnection, args);
+    return storage.beginGoogleConnection();
+  });
+  handleTrusted(StorageIpcChannel.getConnectionStatus, (args) => {
+    return storage.getConnectionStatus(parseTransactionPayload(StorageIpcChannel.getConnectionStatus, args).transactionId);
+  });
+  handleTrusted(StorageIpcChannel.cancelConnection, (args) => {
+    return storage.cancelConnection(parseTransactionPayload(StorageIpcChannel.cancelConnection, args).transactionId);
+  });
+  handleTrusted(StorageIpcChannel.listFiles, (args) => {
+    return storage.listFiles(parseListFilesPayload(StorageIpcChannel.listFiles, args));
+  });
+  handleTrusted(StorageIpcChannel.getFileMetadata, (args) => {
+    const { accountId, fileId } = parseFileMetadataPayload(StorageIpcChannel.getFileMetadata, args);
+    return storage.getFileMetadata(accountId, fileId);
+  });
+  handleTrusted(StorageIpcChannel.disconnectAccount, (args) => {
+    return storage.disconnectAccount(parseAccountPayload(StorageIpcChannel.disconnectAccount, args).accountId);
+  });
+
   auth.onChange((status) => {
+    if (status.phase !== 'signed-in') storage.reset();
     mainWindow?.webContents.send(AuthIpcChannel.statusChanged, status);
   });
 }
 
-function createAuthManager(): AuthManager {
-  const api = backendUrl.ok ? new BackendApi(backendUrl.url) : null;
+function createStorageManager(api: BackendApi | null, auth: AuthManager): StorageManager {
+  return new StorageManager({
+    api,
+    withAccessToken: (call) => auth.withAccessToken(call),
+    openExternal: async (url) => {
+      // Defense in depth: StorageManager already validated this; re-check right before opening.
+      if (!api || !isTrustedStorageAuthorizeUrl(url, api.origin)) {
+        throw new Error('Refusing to open an untrusted URL');
+      }
+      await shell.openExternal(url);
+    }
+  });
+}
+
+function createAuthManager(api: BackendApi | null): AuthManager {
   const store = createTokenStore(safeStorage, join(app.getPath('userData'), 'session', 'refresh-token.json'));
   if (store.persistence === 'memory-only') {
     console.warn('[hyperdrive] OS-level encryption is unavailable; sessions will not survive a restart.');
@@ -184,8 +232,9 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     hardenWebContents();
-    const auth = createAuthManager();
-    registerIpc(auth);
+    const api = backendUrl.ok ? new BackendApi(backendUrl.url) : null;
+    const auth = createAuthManager(api);
+    registerIpc(auth, createStorageManager(api, auth));
     mainWindow = createMainWindow();
     void auth.initialize();
 

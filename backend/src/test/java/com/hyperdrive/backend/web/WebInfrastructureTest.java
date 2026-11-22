@@ -47,7 +47,7 @@ class WebInfrastructureTest {
 
     @Test
     void rateLimitFilterReturns429WithRetryAfterForSensitiveEndpoints() throws Exception {
-        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 2, 2, 2, 2, 2, 100);
+        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 2, 2, 2, 2, 2, 2, 2, 2, 2, 100);
         RateLimitFilter filter = new RateLimitFilter(new RateLimiter(clock, props.window(), 100), props);
 
         int[] statuses = new int[3];
@@ -68,6 +68,27 @@ class WebInfrastructureTest {
             MockHttpServletResponse response = new MockHttpServletResponse();
             filter.doFilter(new MockHttpServletRequest("GET", "/api/v1/health"), response, new MockFilterChain());
             assertThat(response.getStatus()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void storageConnectionStartPollingAndBrowserLegAreRateLimited() throws Exception {
+        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 9, 9, 9, 9, 9, 1, 1, 2, 3, 100);
+        RateLimitFilter filter = new RateLimitFilter(new RateLimiter(clock, props.window(), 100), props);
+        record Case(String method, String path, int allowed) {
+        }
+        for (Case c : java.util.List.of(
+                new Case("POST", "/api/v1/storage-connections/google/transactions", 1),
+                new Case("GET", "/api/v1/storage-connections/google/authorize/hds_x", 1),
+                new Case("GET", "/api/v1/storage-connections/transactions/abc", 2),
+                new Case("GET", "/api/v1/accounts/abc/files", 3))) {
+            int ok = 0;
+            for (int i = 0; i < 5; i++) {
+                MockHttpServletResponse response = new MockHttpServletResponse();
+                filter.doFilter(new MockHttpServletRequest(c.method(), c.path()), response, new MockFilterChain());
+                ok += response.getStatus() == 200 ? 1 : 0;
+            }
+            assertThat(ok).as(c.path()).isEqualTo(c.allowed());
         }
     }
 

@@ -15,7 +15,11 @@ import java.util.regex.Pattern;
 public enum SecureTokens {
     HANDOFF_CODE("hdc_"),
     ACCESS_TOKEN("hda_"),
-    REFRESH_TOKEN("hdr_");
+    REFRESH_TOKEN("hdr_"),
+    /** One-time ticket in the browser-start URL of a storage connection. */
+    STORAGE_TICKET("hds_"),
+    /** Cookie value binding a storage connection's Google callback to the browser that started it. */
+    BROWSER_BINDING("hdb_");
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Base64.Encoder ENCODER = Base64.getUrlEncoder().withoutPadding();

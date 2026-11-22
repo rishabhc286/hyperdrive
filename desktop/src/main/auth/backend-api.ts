@@ -1,4 +1,6 @@
 import type { SafeUser } from '../../shared/auth';
+import type { ConnectedAccount, ConnectionStatus, FilePage, StorageFile } from '../../shared/storage';
+import { parseAccount, parseConnectionStatus, parseFile, parseFilePage } from '../storage/parse';
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -18,6 +20,14 @@ export class BackendUnreachableError extends Error {
   constructor(readonly timedOut: boolean) {
     super(timedOut ? 'Backend request timed out' : 'Backend unreachable');
     this.name = 'BackendUnreachableError';
+  }
+}
+
+/** The request was aborted by the caller (for example, the account was disconnected meanwhile). */
+export class RequestAbortedError extends Error {
+  constructor() {
+    super('Request aborted');
+    this.name = 'RequestAbortedError';
   }
 }
 
@@ -43,6 +53,12 @@ export interface TokenSet {
   readonly accessTokenExpiresAt: number;
   readonly refreshToken: string;
   readonly refreshTokenExpiresAt: number;
+}
+
+export interface StorageTransactionCreated {
+  readonly transactionId: string;
+  readonly authorizationUrl: string;
+  readonly expiresAt: string;
 }
 
 export interface CreateTransactionRequest {
@@ -114,12 +130,67 @@ export class BackendApi {
     );
   }
 
+  // --- Cloud storage (Batch 3). Provider tokens never come back from these endpoints. ---
+
+  async createStorageTransaction(accessToken: string): Promise<StorageTransactionCreated> {
+    const body = await this.json(
+      await this.send('POST', '/api/v1/storage-connections/google/transactions', undefined, accessToken, [201])
+    );
+    const { transactionId, authorizationUrl, expiresAt } = body;
+    if (typeof transactionId !== 'string' || typeof authorizationUrl !== 'string' || typeof expiresAt !== 'string') {
+      throw new UnexpectedResponseError();
+    }
+    return { transactionId, authorizationUrl, expiresAt };
+  }
+
+  async storageTransactionStatus(accessToken: string, transactionId: string): Promise<ConnectionStatus> {
+    const path = `/api/v1/storage-connections/transactions/${encodeURIComponent(transactionId)}`;
+    return parseConnectionStatus(await this.json(await this.send('GET', path, undefined, accessToken)));
+  }
+
+  async cancelStorageTransaction(accessToken: string, transactionId: string): Promise<ConnectionStatus> {
+    const path = `/api/v1/storage-connections/transactions/${encodeURIComponent(transactionId)}/cancel`;
+    return parseConnectionStatus(await this.json(await this.send('POST', path, undefined, accessToken, [200])));
+  }
+
+  async listAccounts(accessToken: string): Promise<ConnectedAccount[]> {
+    const body = await this.json(await this.send('GET', '/api/v1/accounts', undefined, accessToken));
+    const items = body['items'];
+    if (!Array.isArray(items)) throw new UnexpectedResponseError();
+    return items.map(parseAccount);
+  }
+
+  async listFiles(
+    accessToken: string,
+    accountId: string,
+    parentId: string | null,
+    pageToken: string | null,
+    signal?: AbortSignal
+  ): Promise<FilePage> {
+    const query = new URLSearchParams();
+    if (parentId) query.set('parentId', parentId);
+    if (pageToken) query.set('pageToken', pageToken);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    const path = `/api/v1/accounts/${encodeURIComponent(accountId)}/files${suffix}`;
+    return parseFilePage(await this.json(await this.send('GET', path, undefined, accessToken, [200], signal)));
+  }
+
+  async getFile(accessToken: string, accountId: string, fileId: string, signal?: AbortSignal): Promise<StorageFile> {
+    const path = `/api/v1/accounts/${encodeURIComponent(accountId)}/files/${encodeURIComponent(fileId)}`;
+    return parseFile(await this.json(await this.send('GET', path, undefined, accessToken, [200], signal)));
+  }
+
+  async disconnectAccount(accessToken: string, accountId: string): Promise<void> {
+    await this.send('DELETE', `/api/v1/accounts/${encodeURIComponent(accountId)}`, undefined, accessToken, [204]);
+  }
+
   private async send(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     body?: unknown,
     accessToken?: string,
-    okStatuses: readonly number[] = [200, 201]
+    okStatuses: readonly number[] = [200, 201],
+    signal?: AbortSignal
   ): Promise<Response> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -132,9 +203,10 @@ export class BackendApi {
         body: body === undefined ? null : JSON.stringify(body),
         redirect: 'error',
         cache: 'no-store',
-        signal: AbortSignal.timeout(this.timeoutMs)
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs)
       });
     } catch (error) {
+      if (signal?.aborted) throw new RequestAbortedError();
       throw new BackendUnreachableError(error instanceof DOMException && error.name === 'TimeoutError');
     }
     if (!okStatuses.includes(response.status)) {

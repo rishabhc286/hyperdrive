@@ -18,6 +18,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final String DESKTOP = "/api/v1/auth/desktop/";
+    private static final String STORAGE = "/api/v1/storage-connections/";
+    private static final String ACCOUNTS = "/api/v1/accounts";
 
     private final RateLimiter limiter;
     private final RateLimitProperties properties;
@@ -25,7 +27,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
             DESKTOP + "transactions", RateLimitProperties::transactions,
             DESKTOP + "exchange", RateLimitProperties::exchange,
             "/api/v1/auth/refresh", RateLimitProperties::refresh,
-            "/api/v1/me/onboarding", RateLimitProperties::onboarding);
+            "/api/v1/me/onboarding", RateLimitProperties::onboarding,
+            STORAGE + "google/transactions", RateLimitProperties::storageTransactions);
 
     public RateLimitFilter(RateLimiter limiter, RateLimitProperties properties) {
         this.limiter = limiter;
@@ -44,6 +47,17 @@ public class RateLimitFilter extends OncePerRequestFilter {
         } else if ("GET".equals(request.getMethod()) && path.startsWith(DESKTOP + "authorize/")) {
             bucket = DESKTOP + "authorize";
             limit = properties.authorize();
+        } else if ("GET".equals(request.getMethod()) && (path.startsWith(STORAGE + "google/authorize/")
+                || path.equals(STORAGE + "google/callback"))) {
+            bucket = STORAGE + "browser";
+            limit = properties.storageBrowser();
+        } else if (path.startsWith(STORAGE + "transactions/")) {
+            // Status polling and cancellation.
+            bucket = STORAGE + "transactions";
+            limit = properties.storageStatus();
+        } else if (path.equals(ACCOUNTS) || path.startsWith(ACCOUNTS + "/")) {
+            bucket = ACCOUNTS;
+            limit = properties.browse();
         }
 
         if (bucket != null && !limiter.tryAcquire(bucket + "|" + request.getRemoteAddr(), limit)) {

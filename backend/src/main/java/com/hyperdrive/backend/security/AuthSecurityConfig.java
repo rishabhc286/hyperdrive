@@ -82,6 +82,11 @@ public class AuthSecurityConfig {
                         .accessDeniedHandler(ProblemSecurityHandlers.bearerAccessDenied()))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.GET, "/api/v1/health", "/api/v1/ready").permitAll()
+                        // Browser leg of a storage connection. Authorized by a one-time ticket, then by
+                        // OAuth state + a browser-binding cookie; never by a HyperDrive bearer token.
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/storage-connections/google/authorize/*",
+                                "/api/v1/storage-connections/google/callback").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/desktop/transactions",
                                 "/api/v1/auth/desktop/exchange",

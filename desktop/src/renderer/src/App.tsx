@@ -8,15 +8,26 @@ import { useBackendHealth } from './useBackendHealth';
 export interface AppProps {
   /** Preload bridge. Injected so tests can supply a mock. */
   readonly api: HyperdriveApi | undefined;
+  /** Test hook: storage connection polling interval. */
+  readonly pollIntervalMs?: number | undefined;
 }
 
 /** Root: routes between the auth states and the signed-in shell. */
-export function App({ api }: AppProps) {
+export function App({ api, pollIntervalMs }: AppProps) {
   const auth = useAuthStatus(api?.auth);
   const { status: backend, recheck } = useBackendHealth(api);
 
   if (auth.phase === 'signed-in' && auth.user && api) {
-    return <Shell user={auth.user} backendStatus={backend} onRecheckBackend={recheck} onSignOut={() => void api.auth.signOut()} />;
+    return (
+      <Shell
+        user={auth.user}
+        backendStatus={backend}
+        onRecheckBackend={recheck}
+        onSignOut={() => void api.auth.signOut()}
+        storage={api.storage}
+        pollIntervalMs={pollIntervalMs}
+      />
+    );
   }
 
   return (

@@ -211,7 +211,7 @@ class DesktopLoginFlowTest extends AuthIntegrationTest {
 
         MvcResult result = mvc.perform(get(URI.create(tx.authorizationUrl()).getPath())).andReturn();
         assertThat(result.getResponse().getStatus()).isEqualTo(400);
-        assertThat(result.getResponse().getContentAsString()).contains("can't be used");
+        assertThat(result.getResponse().getContentAsString()).contains("can&#39;t be used");
     }
 
     @Test

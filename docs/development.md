@@ -14,6 +14,9 @@ See the [README](../README.md) for setup and run commands. This page covers deta
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Backend (auth) | Process environment | **required** (startup fails without them) |
 | `HYPERDRIVE_PUBLIC_BASE_URL` | Backend (auth) | Process environment | **required**, e.g. `http://127.0.0.1:18080` |
 | `HYPERDRIVE_SECURE_COOKIES` | Backend (auth) | Process environment | `false` (set `true` behind https) |
+| `HYPERDRIVE_CREDENTIAL_KEY` | Backend (auth) | Process environment | **required**: base64 of 32 random bytes (encrypts Google Drive tokens) |
+| `HYPERDRIVE_CREDENTIAL_KEY_VERSION`, `HYPERDRIVE_CREDENTIAL_PREVIOUS_KEYS` | Backend (auth) | Process environment | `1`, empty (key rotation) |
+| `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` | Backend (auth) | Process environment | Fall back to `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` |
 | `HYPERDRIVE_BACKEND_URL` | Desktop **main process** only | Process environment (`process.env`) | `http://127.0.0.1:18080` |
 
 Neither the backend nor the desktop loads `.env`. Set variables in the PowerShell session that
@@ -45,9 +48,11 @@ Layout:
 src/main/               Electron main process: window, hardening, IPC, health check
 src/main/auth/          Sign-in: PKCE, loopback listener, backend client, token store, AuthManager
 src/main/ipc-validation.ts   Payload validation for renderer → main calls
+src/main/storage/       Cloud storage: StorageManager (bridge to backend APIs), strict response parsers
 src/preload/            contextBridge API (health + auth status/actions, no tokens)
 src/shared/             Types and rules shared by all contexts (auth status, username rules)
-src/renderer/src/       React UI: App (routing by auth phase), auth screens, onboarding, Shell
+src/renderer/src/       React UI: App (routing by auth phase), auth screens, onboarding, Shell,
+                        CloudAccounts (connect/disconnect), FilesBrowser (read-only listing)
 test/                   Vitest setup and the mock preload bridge used by renderer tests
 ```
 
@@ -80,6 +85,12 @@ Packaging (installer, code signing) is not set up yet.
     security/        filter chains (auth-enabled and health-only)
     web/             correlation IDs, rate limiting, sanitized errors
     health/          liveness and readiness
+    storage/         StorageConfig (clients, timeouts), StorageStartupCheck
+    storage/connect/ Drive consent: transactions, browser leg + callback, Spring OAuth glue
+    storage/account/ connected accounts, encrypted credentials + serialized refresh, accounts/files API
+    storage/files/   browsing orchestration (ownership → credentials → provider, error mapping)
+    storage/provider/  FileBrowser abstraction + ProviderFile DTO; google/ = Drive v3 adapter
+    storage/crypto/  AES-256-GCM CredentialCipher
   ```
 - **Database access:** plain `JdbcClient` with explicit SQL. Every single-use or rotating state
   change is one conditional `UPDATE … RETURNING`. Migrations live in
@@ -96,6 +107,9 @@ Packaging (installer, code signing) is not set up yet.
   Testcontainers** with the real Flyway migrations, and against `FakeOidcProvider`, an in-process
   OIDC provider (discovery, token, JWKS, userinfo) that signs real RS256 ID tokens. That means
   Spring Security's OIDC validation runs unmodified. No live Google credentials are needed.
+  For Batch 3 the same fake also serves the refresh-token grant and a small Drive v3 (`files.list`
+  children queries, `files.get`), with error injection (401/403 reasons/429 + Retry-After/5xx).
+  Storage tests use a fixed test-only credential key that exists only in test code.
 - **Without Docker:** the integration classes are **skipped** (`disabledWithoutDocker`). Maven
   reports them as skipped, never as passed.
 

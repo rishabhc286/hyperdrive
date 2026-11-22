@@ -23,10 +23,22 @@ spring:
           google:
             client-id: ${GOOGLE_CLIENT_ID:}
             client-secret: ${GOOGLE_CLIENT_SECRET:}
-            # Identity only. No Drive (or any other API) scopes: connecting Google Drive is a
-            # separate, explicit flow in a later batch.
+            # Identity only. No Drive (or any other API) scopes: connecting Google Drive is the
+            # separate "google-drive" registration below, used only when the user asks for it.
             scope: openid,profile,email
             redirect-uri: ${HYPERDRIVE_PUBLIC_BASE_URL:}/login/oauth2/code/google
+          # Storage consent (Google Drive, read-only). Never used for HyperDrive sign-in. By default
+          # it reuses the sign-in OAuth client; set GOOGLE_DRIVE_CLIENT_* to use a separate client.
+          google-drive:
+            provider: google
+            client-name: Google Drive
+            client-id: ${GOOGLE_DRIVE_CLIENT_ID:${GOOGLE_CLIENT_ID:}}
+            client-secret: ${GOOGLE_DRIVE_CLIENT_SECRET:${GOOGLE_CLIENT_SECRET:}}
+            authorization-grant-type: authorization_code
+            # openid/email/profile identify WHICH Google account's Drive was connected (it may differ
+            # from the sign-in account); drive.readonly is the restricted read-only Drive scope.
+            scope: openid,email,profile,https://www.googleapis.com/auth/drive.readonly
+            redirect-uri: ${HYPERDRIVE_PUBLIC_BASE_URL:}/api/v1/storage-connections/google/callback
 
 server:
   servlet:
@@ -42,3 +54,9 @@ hyperdrive:
   auth:
     enabled: true
     public-base-url: ${HYPERDRIVE_PUBLIC_BASE_URL:}
+  storage:
+    # Required: base64 of 32 random bytes (AES-256). Encrypts provider tokens at rest. No default.
+    credential-key: ${HYPERDRIVE_CREDENTIAL_KEY:}
+    credential-key-version: ${HYPERDRIVE_CREDENTIAL_KEY_VERSION:1}
+    # Optional, for key rotation: "version:base64,version:base64" (decryption only).
+    previous-credential-keys: ${HYPERDRIVE_CREDENTIAL_PREVIOUS_KEYS:}

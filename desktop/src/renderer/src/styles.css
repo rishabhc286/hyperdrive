@@ -424,3 +424,156 @@ p {
   flex-wrap: wrap;
   gap: 0.6rem;
 }
+
+/* ---- Cloud accounts and file browsing (Batch 3) ---- */
+
+.notice {
+  margin: 0.75rem 0;
+}
+
+.notice p {
+  margin: 0 0 0.5rem;
+}
+
+.badge-ok {
+  color: var(--ok);
+  align-self: flex-start;
+}
+
+.badge-warn {
+  color: var(--warn);
+  align-self: flex-start;
+}
+
+.button-danger {
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+.button-danger:hover:not(:disabled) {
+  background: #f58d86;
+}
+
+.accounts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.account-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.1rem;
+}
+
+.account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.confirm {
+  max-width: 32rem;
+}
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.files-toolbar .field-label {
+  margin: 0;
+}
+
+.select {
+  width: auto;
+  max-width: 100%;
+  min-width: 14rem;
+}
+
+.breadcrumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+}
+
+.breadcrumbs li + li::before {
+  content: '›';
+  color: var(--text-muted);
+  margin-right: 0.25rem;
+}
+
+.breadcrumbs [aria-current='page'] {
+  font-weight: 600;
+}
+
+.link-button {
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.files-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+  table-layout: auto;
+}
+
+.files-table th,
+.files-table td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.files-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.files-table td:nth-child(3),
+.files-table td:nth-child(4) {
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.file-icon {
+  display: inline-block;
+  width: 1.4rem;
+}
+
+@media (max-width: 720px) {
+  .files-table th:nth-child(4),
+  .files-table td:nth-child(4) {
+    display: none;
+  }
+}
