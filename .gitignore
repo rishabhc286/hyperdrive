@@ -12,6 +12,7 @@ npm-debug.log*
 
 # Java / Maven
 backend/target/
+agent/target/
 **/.mvn/wrapper/maven-wrapper.jar
 
 # IDEs and OS files

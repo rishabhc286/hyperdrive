@@ -16,6 +16,7 @@ What the code does today, and what it deliberately doesn't yet. See
 | Google **Drive** access/refresh tokens | Backend database, AES-256-GCM encrypted (`provider_credentials`) | Plaintext at rest, the desktop, the renderer, URLs, logs |
 | **Dropbox** access/refresh tokens | Same table and encryption as Drive, separate row per connection | Same as above |
 | Dropbox app secret | Backend environment (`DROPBOX_APP_SECRET`) | In desktop code, renderer config, the repo, or logs |
+| Local agent secret | Generated per launch in the Electron main process (256 bits); sent once over the agent's stdin; kept in memory by both processes | Command line, environment, files, logs, handshake, renderer |
 | Provider listing cursors | Wrapped into AES-GCM continuations bound to account + provider + folder | Returned raw, or accepted for another account |
 | Credential encryption key | Backend environment (`HYPERDRIVE_CREDENTIAL_KEY`) | In the database, the repo, or a hardcoded fallback |
 | Storage ticket / OAuth state / binding cookie | Backend: SHA-256 hashes. Ticket: 2 min, single use | Reusable, logged |
@@ -96,6 +97,32 @@ Details: [dropbox.md](dropbox.md).
   other account, provider or folder, before any provider call.
 - **Disconnect:** local only. `auth/token/revoke` isn't called; see [dropbox.md](dropbox.md).
 
+## Local agent (Batch 5)
+
+Details: [local-agent.md](local-agent.md#loopback-threat-model-honest-scope) and
+[ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md).
+
+- **Loopback only:** binds to `127.0.0.1` on an OS-assigned port (never `0.0.0.0`, no fixed
+  fallback), confirmed on Windows 11.
+- **Every request authenticated:** the per-launch bearer secret is compared in constant time.
+- **Not reachable from browsers:**
+  - `Host` must be exactly `127.0.0.1:<port>`, which blocks DNS rebinding.
+  - Any `Origin` header is rejected, and no CORS headers are sent.
+  - GET only, with no bodies or query strings, and a bounded worker pool and request time.
+- **No dangerous endpoints:** no shutdown, file, environment, path, configuration-write, proxy or
+  shell endpoints. Shutdown exists only on the owned stdin channel.
+- **Fail-closed bootstrap:** at most 8 KiB, exactly one protocol version, required fields only,
+  and a 10 s timeout. The received input is never echoed.
+- **The desktop trusts nothing from the child:** it validates the handshake schema, protocol and
+  port, builds `http://127.0.0.1:<port>` itself, requires an authenticated health check before
+  showing Ready, and buffers child output with a bound and secret redaction.
+- **Ownership:** `spawn` with `shell:false` and an argv array. The desktop kills only the
+  `ChildProcess` it spawned, never by name, and never attaches to an existing service on a port.
+- **Renderer:** receives status only (state, version, uptime, capabilities, an error code),
+  never the port, secret, paths or spawn parameters.
+- **Not a sandbox:** malware already running as the same Windows user can still reach the agent
+  (for example by reading process memory). That's inherent to desktop software.
+
 ## Desktop
 
 - **Electron hardening (Batch 1):** sandbox, context isolation, no Node in the renderer, strict
@@ -120,6 +147,10 @@ Details: [dropbox.md](dropbox.md).
 - **Refreshes:** single-flight. The access token is refreshed 30 s before expiry.
 
 ## Known limitations
+
+- **Agent orphans:** an agent that hangs without reading stdin, after Electron has died, isn't
+  cleaned up automatically. There's no Windows Job Object yet; the data-directory lock then makes
+  a new agent report `data-dir-locked`.
 
 - **Live Google sign-in, Drive and Dropbox not verified:** none has been run against a real
   Google OAuth client or Dropbox app (no credentials were available). Automated tests use a fake Google. See the

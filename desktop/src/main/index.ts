@@ -9,9 +9,13 @@ import {
   shell,
   type IpcMainInvokeEvent
 } from 'electron';
+import { AgentIpcChannel } from '../shared/agent';
 import { AuthIpcChannel } from '../shared/auth';
 import { StorageIpcChannel } from '../shared/storage';
 import { IpcChannel, type BackendHealth } from '../shared/backend-health';
+import { AgentManager } from './agent/agent-manager';
+import { resolveLaunchConfig } from './agent/launch-config';
+import { agentHttpGet, checkJava, isFile, randomSecret, spawnAgent } from './agent/node-runtime';
 import { AuthManager, isTrustedAuthorizeUrl } from './auth/auth-manager';
 import { BackendApi } from './auth/backend-api';
 import { startLoopbackListener } from './auth/loopback';
@@ -121,7 +125,20 @@ function handleTrusted(channel: string, handler: (args: unknown[]) => unknown): 
   });
 }
 
-function registerIpc(auth: AuthManager, storage: StorageManager): void {
+function registerIpc(auth: AuthManager, storage: StorageManager, agent: AgentManager): void {
+  // Agent: status and a bounded restart only. No port, secret, path or spawn parameter crosses IPC.
+  handleTrusted(AgentIpcChannel.getStatus, (args) => {
+    expectNoArgs(AgentIpcChannel.getStatus, args);
+    return agent.getStatus();
+  });
+  handleTrusted(AgentIpcChannel.restart, (args) => {
+    expectNoArgs(AgentIpcChannel.restart, args);
+    return agent.restart();
+  });
+  agent.onChange((status) => {
+    mainWindow?.webContents.send(AgentIpcChannel.statusChanged, status);
+  });
+
   handleTrusted(IpcChannel.backendHealth, async (args): Promise<BackendHealth> => {
     expectNoArgs(IpcChannel.backendHealth, args);
     if (!backendUrl.ok) {
@@ -204,6 +221,32 @@ function createStorageManager(api: BackendApi | null, auth: AuthManager): Storag
   });
 }
 
+function createAgentManager(): AgentManager {
+  const manager = new AgentManager({
+    launch: resolveLaunchConfig({
+      env: process.env,
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      userData: app.getPath('userData'),
+      fileExists: isFile
+    }),
+    fileExists: isFile,
+    checkJava,
+    spawn: spawnAgent,
+    httpGet: agentHttpGet,
+    randomSecret
+  });
+  manager.onChange((status) => {
+    if (status.state === 'failed') {
+      // Main-process console only (never the renderer): the reason code plus redacted agent stderr.
+      console.warn(`[hyperdrive] local agent failed: ${status.error ?? 'unknown'}`);
+      for (const line of manager.log.snapshot().slice(-10)) console.warn(`[hyperdrive-agent] ${line}`);
+    }
+  });
+  return manager;
+}
+
 function createAuthManager(api: BackendApi | null): AuthManager {
   const store = createTokenStore(safeStorage, join(app.getPath('userData'), 'session', 'refresh-token.json'));
   if (store.persistence === 'memory-only') {
@@ -234,17 +277,31 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
+  let agent: AgentManager | null = null;
+  let agentStopped = false;
+
   void app.whenReady().then(() => {
     hardenWebContents();
     const api = backendUrl.ok ? new BackendApi(backendUrl.url) : null;
     const auth = createAuthManager(api);
-    registerIpc(auth, createStorageManager(api, auth));
+    agent = createAgentManager();
+    registerIpc(auth, createStorageManager(api, auth), agent);
     mainWindow = createMainWindow();
     void auth.initialize();
+    // The agent is independent of sign-in and of the remote backend; cloud browsing works without it.
+    void agent.start();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();
     });
+  });
+
+  // On quit, stop the owned agent gracefully (bounded), then let the app exit.
+  app.on('before-quit', (event) => {
+    if (!agent || agentStopped) return;
+    event.preventDefault();
+    agentStopped = true;
+    void agent.stop().finally(() => app.quit());
   });
 
   app.on('window-all-closed', () => {

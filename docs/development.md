@@ -19,6 +19,9 @@ See the [README](../README.md) for setup and run commands. This page covers deta
 | `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` | Backend (auth) | Process environment | Fall back to `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` |
 | `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET` | Backend (auth) | Process environment | empty = Dropbox disabled; only one set = startup fails |
 | `HYPERDRIVE_BACKEND_URL` | Desktop **main process** only | Process environment (`process.env`) | `http://127.0.0.1:18080` |
+| `HYPERDRIVE_AGENT_JAVA` | Desktop main process | Process environment | unset → `JAVA_HOME\bin\java.exe` → `java` on PATH |
+| `HYPERDRIVE_AGENT_JAR` | Desktop main process | Process environment | `<repo>\agent\target\hyperdrive-agent.jar` (development only) |
+| `HYPERDRIVE_AGENT_LOG_LEVEL` | Desktop main process (passed to the agent) | Process environment | `INFO` |
 
 Neither the backend nor the desktop loads `.env`. Set variables in the PowerShell session that
 starts them (`$env:NAME = "value"`). The renderer never receives environment variables, and the
@@ -50,6 +53,7 @@ src/main/               Electron main process: window, hardening, IPC, health ch
 src/main/auth/          Sign-in: PKCE, loopback listener, backend client, token store, AuthManager
 src/main/ipc-validation.ts   Payload validation for renderer → main calls
 src/main/storage/       Cloud storage: StorageManager (bridge to backend APIs), strict response parsers
+src/main/agent/         Local agent: AgentManager (lifecycle), Java discovery, handshake/status parsing, real spawn/fetch
 src/preload/            contextBridge API (health + auth status/actions, no tokens)
 src/shared/             Types and rules shared by all contexts (auth status, username rules)
 src/renderer/src/       React UI: App (routing by auth phase), auth screens, onboarding, Shell,
@@ -64,6 +68,22 @@ Version notes:
   `npm ci`, the first `npm run dev` or `npm start` downloads it again.
 
 Packaging (installer, code signing) is not set up yet.
+
+## Local agent (`agent/`)
+
+| Command | What it does |
+| --- | --- |
+| `.\mvnw.cmd verify` | Compile (Java 21), run unit and real-process tests, build `target\hyperdrive-agent.jar` |
+| `.\mvnw.cmd package -DskipTests` | Just rebuild the jar |
+
+- **Dependencies:** plain Java on the JDK HTTP server plus Jackson. The Spring Boot parent POM
+  only supplies dependency versions and the runnable-jar packaging; no Spring runtime, no
+  database. Docker isn't needed.
+- **How it runs:** the desktop starts it automatically (see [local-agent.md](local-agent.md)).
+  Running the jar by hand is only useful together with a bootstrap message on stdin.
+- **Desktop smoke test:** `desktop/src/main/agent/agent-smoke.test.ts` drives the **real** jar
+  through the production `AgentManager` with real `spawn` and `fetch`. It's skipped (shown as
+  skipped by Vitest) when the jar hasn't been built.
 
 ## Backend (`backend/`)
 

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { AgentIpcChannel, type AgentApi, type AgentStatus } from '../shared/agent';
 import { AuthIpcChannel, type AuthApi, type AuthStatus } from '../shared/auth';
 import { IpcChannel, type HyperdriveApi } from '../shared/backend-health';
 import { StorageIpcChannel, type StorageApi } from '../shared/storage';
@@ -47,10 +48,24 @@ const storage: StorageApi = {
     ipcRenderer.invoke(StorageIpcChannel.disconnectAccount, { accountId: String(input.accountId) })
 };
 
+// Status and restart only; the renderer never learns the agent's port or secret.
+const agent: AgentApi = {
+  getStatus: () => ipcRenderer.invoke(AgentIpcChannel.getStatus),
+  restart: () => ipcRenderer.invoke(AgentIpcChannel.restart),
+  onStatusChange: (listener) => {
+    const wrapped = (_event: IpcRendererEvent, status: AgentStatus): void => listener(status);
+    ipcRenderer.on(AgentIpcChannel.statusChanged, wrapped);
+    return () => {
+      ipcRenderer.removeListener(AgentIpcChannel.statusChanged, wrapped);
+    };
+  }
+};
+
 const api: HyperdriveApi = {
   checkBackendHealth: () => ipcRenderer.invoke(IpcChannel.backendHealth),
   auth,
-  storage
+  storage,
+  agent
 };
 
 contextBridge.exposeInMainWorld('hyperdrive', api);

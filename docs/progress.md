@@ -1,5 +1,132 @@
 # Progress
 
+## Batch 5: local agent process, authenticated loopback API, Electron lifecycle (2026-11-22)
+
+### Foundation check before starting
+
+- **Batch 4 re-verified unchanged:** commit `eb4f537`, backend `mvnw verify` 211 tests with
+  0 skipped; desktop `npm run check` 167 tests.
+- **Starting point:** `agent/` held only a README. There was no existing local transport,
+  including gRPC, to reuse.
+
+### Completed
+
+- **Agent** (`agent/`, Java 21, an independent Maven project with its own wrapper):
+  - Plain Java on the JDK HTTP server plus Jackson. The Spring Boot parent is used only for
+    dependency versions and the runnable jar `agent/target/hyperdrive-agent.jar`. No database,
+    Redis or backend dependency.
+  - Stdin bootstrap: at most 8 KiB, exactly protocol 1, required fields only, a 10 s timeout,
+    fail closed, and the input is never echoed.
+  - Exclusive `agent.lock` in `<userData>/agent`.
+  - API bound to `127.0.0.1` on an OS-assigned port. Every request needs the bearer secret
+    (constant-time), the exact `Host`, and no `Origin`. GET only, no bodies or queries.
+  - Endpoints `/local/v1/health` and `/local/v1/status`, with truthful capabilities: all
+    `false`.
+  - One-line stdout handshake (`ready`/`error`); logs to stderr with secret redaction.
+  - Stdin is the parent-lifetime channel: a `shutdown` message, or EOF, gives a graceful exit.
+- **Desktop main process:**
+  - `AgentManager` owns one child process: `spawn` with `shell:false`, a 256-bit secret per
+    launch sent over stdin only, and deduplicated start and restart.
+  - Handshake checks: schema, protocol, port range, and no child-supplied host or URL.
+    **Authenticated health** is required before Ready, with startup and request timeouts.
+  - Bounded stdout before the handshake (4 KiB) and a bounded, redacted stderr ring buffer.
+  - States stopped, starting, ready, stopping, failed and restarting. Automatic restart after an
+    unexpected exit up to 2 times in 10 minutes; failed starts aren't retried automatically.
+  - Graceful stop on quit, then a kill of **only the owned child**.
+  - Java discovery: `HYPERDRIVE_AGENT_JAVA`, then `JAVA_HOME`, then `PATH`, with a
+    `java -version` check for 21 or newer. The jar comes from `HYPERDRIVE_AGENT_JAR` or the
+    development default; a packaged app reports `not-packaged`.
+- **IPC and preload:** `agent.getStatus()`, `agent.restart()` and `agent.onStatusChange()`
+  (unsubscribe on unmount), with validated sender and frame and no arguments. No port, secret,
+  path or spawn parameter is exposed.
+- **UI:**
+  - The Overview **Local agent** card shows state, version, uptime, an actionable error and
+    Restart (disabled while pending). It says plainly that Ready doesn't mean connected, cached,
+    streaming or mounted.
+  - Settings lists the backend, local agent and virtual drive separately.
+  - Cloud browsing doesn't depend on the agent.
+- **Docs:**
+  - New: [local-agent.md](local-agent.md) (design note, threat model, troubleshooting) and
+    [ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md) (transport and the
+    future content-transfer boundary).
+  - Rewritten: `agent/README.md`.
+  - Updated: README, architecture, development, security and `.env.example`.
+
+### Foundation changes (separate from new features)
+
+- **Repository:** `.gitignore` now ignores `agent/target/`.
+- **Shared types:** `HyperdriveApi` gained `agent`, and the test mock bridge gained an agent
+  double.
+- **Overview card:** the agent card uses `aria-live` rather than `role="status"`, so existing
+  tests that find the backend indicator by its `status` role stay unambiguous.
+
+### Defects found during this batch and fixed
+
+- **Agent version showed "unknown":** the Spring Boot parent filters resources with `@…@`, not
+  `${…}`. It was found by running the real jar, and a test now pins the version.
+- **Restart test timing:** the auto-restart test checked state before the exit was processed.
+  It now waits for each spawn.
+
+### Checks executed (Windows 11, JDK 25.0.5, Node 24.19.0)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Agent unit + real-process tests, jar | `cd agent; .\mvnw.cmd verify` | **Passed**: 28 tests (bootstrap validation, auth, Host/Origin, loopback binding, lock, shutdown and EOF, a real separate JVM process) |
+| Desktop type check / lint | `npm run typecheck`, `npm run lint` | **Passed** |
+| Desktop tests | `npm test` | **Passed**: 201 tests in 15 files, including the **real agent smoke test** (production `AgentManager`, real Java and real jar) |
+| Desktop build | `npm run build` | **Passed**; no token-format strings in the renderer bundle |
+| Backend regression | `cd backend; .\mvnw.cmd verify` | **Passed**: 211 tests, 0 skipped (no backend code changed) |
+| Real Electron window (built app, read over CDP) | `electron.exe .` | **Passed** (details below) |
+| Abrupt Electron kill | `Stop-Process` on the Electron PID started for the test | **Passed**: the agent exited by itself about 1 s later (stdin EOF) |
+
+Real Electron window check:
+- **Status:** the agent reached **ready** through the real bridge (version `0.1.0-SNAPSHOT`,
+  all capabilities `false`).
+- **Bridge:** exposes only `getStatus`, `restart` and `onStatusChange`.
+- **Renderer:** a direct `fetch` from the renderer is blocked by the CSP.
+- **Restart:** returned ready again.
+- **Process:** one `java.exe` child of `electron.exe`, with arguments only `-jar <jar path>`
+  (no secret), listening only on `127.0.0.1`.
+- **Quit:** closing the window left **0** agent processes and **0** Electron processes, and the
+  port was closed.
+
+Mutation checks; each was caught and reverted:
+- Agent auth bypassed.
+- `Host` check removed.
+- Protocol-version check removed.
+- Parent EOF ignored.
+- Desktop health check skipped.
+- Restart budget removed.
+
+### Requires manual verification (not executed)
+
+- **Signed-in Overview card:** the card was not viewed in a signed-in real window. Signing in
+  needs Google credentials, and the card lives in the signed-in shell; it's covered by jsdom
+  tests. Status, restart and quit were verified in the real app through the bridge.
+- **Other machines:** only this machine was tested, with a single JDK 25. The real
+  Java-not-found and Java-older-than-21 paths were tested with doubles only.
+- **Packaging:** packaged-app behavior (`not-packaged`), installers and a bundled JRE don't
+  exist yet.
+
+### Known limitations
+
+- **Hung agent after a desktop crash:** an agent that hangs without reading stdin after Electron
+  has died isn't cleaned up. There's no Windows Job Object yet.
+- **Development Java:** development needs a JDK 21+ on the machine. That isn't the intended
+  end-user requirement; a bundled runtime is installer work.
+- **Same-user malware:** loopback plus the secret doesn't protect against malware already running
+  as the same Windows user.
+- **Status plane only:** there's no data plane. Provider reads, delegation, caching and the VFS
+  transport are open decisions (ADR 0001).
+
+### Suggested prerequisites for the next batch
+
+- **Content-transfer design:** decide it before writing any read path. That means short-lived
+  access-token delegation from the backend, or another explicit design. The agent ↔ backend
+  authentication is bound to the device session.
+- **Dropbox content scope:** plan the `files.content.read` reconnect for Dropbox.
+- **Live provider checklists:** run both, since content reads build on real provider behavior.
+
 ## Batch 4: Dropbox connection, read-only Dropbox browsing, unified storage view (2026-11-22)
 
 ### Foundation check before starting

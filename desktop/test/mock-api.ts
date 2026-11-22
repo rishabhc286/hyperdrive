@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 import type { AuthApi, AuthStatus, SafeUser } from '../src/shared/auth';
 import type { BackendHealth, HyperdriveApi } from '../src/shared/backend-health';
 import type { StorageApi } from '../src/shared/storage';
+import type { AgentApi, AgentStatus } from '../src/shared/agent';
 
 export const ONBOARDED_USER: SafeUser = {
   id: '11111111-1111-1111-1111-111111111111',
@@ -38,19 +39,22 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
   };
 
   const storage = createMockStorage();
+  const agent = createMockAgent();
 
   const api: HyperdriveApi = {
     checkBackendHealth: vi.fn(() =>
       health === 'pending' ? new Promise<BackendHealth>(() => {}) : Promise.resolve(health)
     ),
     auth,
-    storage
+    storage,
+    agent: agent.api
   };
 
   return {
     api,
     auth,
     storage,
+    agent,
     push(next: AuthStatus) {
       current = next;
       act(() => listener?.(next));
@@ -77,5 +81,41 @@ export function createMockStorage() {
     listFiles: vi.fn<StorageApi['listFiles']>(() => Promise.resolve({ ok: true, value: { items: [], continuation: null } })),
     getFileMetadata: vi.fn<StorageApi['getFileMetadata']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
     disconnectAccount: vi.fn<StorageApi['disconnectAccount']>(() => Promise.resolve({ ok: true, value: null }))
+  };
+}
+
+export const AGENT_READY: AgentStatus = {
+  state: 'ready',
+  agentVersion: '0.1.0-SNAPSHOT',
+  uptimeMillis: 125_000,
+  capabilities: { providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false },
+  error: null,
+  autoRestartsRemaining: 2
+};
+
+/** Fake agent bridge; `push` simulates a status event from the main process. */
+export function createMockAgent(initial: AgentStatus = AGENT_READY) {
+  let current = initial;
+  const listeners = new Set<(s: AgentStatus) => void>();
+  const api = {
+    getStatus: vi.fn<AgentApi['getStatus']>(() => Promise.resolve(current)),
+    restart: vi.fn<AgentApi['restart']>(() => Promise.resolve(current)),
+    onStatusChange: vi.fn<AgentApi['onStatusChange']>((l) => {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    })
+  };
+  return {
+    api,
+    listeners,
+    set(next: AgentStatus) {
+      current = next;
+    },
+    push(next: AgentStatus) {
+      current = next;
+      act(() => listeners.forEach((l) => l(next)));
+    }
   };
 }

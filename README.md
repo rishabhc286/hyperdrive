@@ -8,9 +8,10 @@ to be downloaded in full first.
 > **Status: accounts + read-only Google Drive and Dropbox browsing.** You can sign in with
 > Google (which creates a HyperDrive account), choose a username, then **separately** connect
 > Google Drive and Dropbox accounts and browse their folders and file metadata in one "All
-> storage" view. There is **no file download, streaming, caching or virtual drive yet**. Live
-> Google Drive and Dropbox use has not been tested with real credentials yet. See
-> [docs/progress.md](docs/progress.md).
+> storage" view. A local **agent** process starts with the app and reports its status; it does
+> not read, cache or mount anything yet. There is **no file download, streaming, caching or
+> virtual drive yet**. Live Google Drive and Dropbox use has not been tested with real credentials
+> yet. See [docs/progress.md](docs/progress.md).
 
 The launch website is a separate project and is not part of this repository.
 
@@ -46,6 +47,13 @@ The launch website is a separate project and is not part of this repository.
     as not configured.
   - Provider support matrix: [docs/architecture.md](docs/architecture.md#provider-support-matrix).
 
+- **Batch 5 (local agent):**
+  - A Java 21 agent (`agent/`) that the desktop app starts and supervises.
+  - It speaks an authenticated loopback status API: `127.0.0.1`, a per-launch secret over stdin,
+    and a validated handshake.
+  - Restarts are bounded, and shutdown targets only the agent process the app started.
+  - Status appears on the Overview and in Settings. Details: [docs/local-agent.md](docs/local-agent.md).
+
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
 [docs/google-drive.md](docs/google-drive.md) · [docs/dropbox.md](docs/dropbox.md) ·
 [docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
@@ -54,8 +62,10 @@ Design and security details: [docs/authentication.md](docs/authentication.md) ·
 
 - Google Shared drives / "Shared with me", opening or downloading files, exporting native
   documents, following shortcuts or links, OneDrive.
-- The local agent (`agent/`) and the WinFsp virtual drive (`vfs/`).
-- Streaming, caching and metrics.
+- The agent's data plane: provider reads, range reads, the chunk cache and metrics. The agent
+  only reports status today; see [ADR 0001](docs/adr/0001-local-agent-transport-and-content-boundary.md).
+- The WinFsp virtual drive (`vfs/`).
+- Agent packaging: no bundled Java runtime and no installer. Development uses your JDK 21+.
 - Google OAuth verification: `drive.readonly` is a restricted scope. HyperDrive is unverified
   and runs in Google's Testing mode, with at most 100 test users and a 7-day authorization expiry.
   See [docs/google-drive.md](docs/google-drive.md).
@@ -81,6 +91,7 @@ Maven is not required: use the bundled wrapper (`mvnw.cmd`). Electron downloads 
 cd C:\path\to\Hyperdrive
 cd desktop; npm ci; cd ..
 cd backend; .\mvnw.cmd verify; cd ..     # needs Docker running for the database tests
+cd agent;   .\mvnw.cmd verify; cd ..     # builds agent\target\hyperdrive-agent.jar (no Docker needed)
 ```
 
 ## Run: health-only mode (no database, no sign-in)
@@ -152,7 +163,8 @@ The Google client secret is used by the backend only; never put it in desktop co
 
 ```powershell
 cd backend;  .\mvnw.cmd verify;  cd ..        # unit + PostgreSQL integration tests (Docker required)
-cd desktop;  npm run check;      cd ..        # typecheck, lint, tests, production build
+cd agent;    .\mvnw.cmd verify;  cd ..        # agent unit + real-process tests, builds the jar
+cd desktop;  npm run check;      cd ..        # typecheck, lint, tests (incl. a real agent smoke test if the jar exists), build
 docker compose --env-file .env.example config -q
 ```
 
@@ -178,6 +190,9 @@ not passed).
 | Google shows `redirect_uri_mismatch` | The redirect URI in Google Cloud Console must equal `<HYPERDRIVE_PUBLIC_BASE_URL>/login/oauth2/code/google` exactly. |
 | Google shows "Access blocked: app not verified / not a test user" | Add your Google account as a test user on the OAuth consent screen. |
 | "Sign-in didn't complete" after choosing an account | Check the backend log (search for the correlation ID). `HYPERDRIVE_BACKEND_URL` (desktop) and `HYPERDRIVE_PUBLIC_BASE_URL` (backend) must be the same origin. |
+| Overview shows "Local agent: Failed" with "Java 21 or newer wasn't found" | Install JDK 21+, or set `$env:JAVA_HOME` / `$env:HYPERDRIVE_AGENT_JAVA` in the window that runs `npm run dev`, then click **Restart agent**. |
+| "The agent hasn't been built yet" | `cd agent; .\mvnw.cmd package` |
+| "Another HyperDrive agent is already using this profile's agent folder" | Another HyperDrive instance (or a leftover agent) is running. See [docs/local-agent.md](docs/local-agent.md#troubleshooting). |
 | `docker compose up` says port 5432 is not available | Another PostgreSQL is running locally. Set `POSTGRES_PORT=55432` in `.env` and use that port in `HYPERDRIVE_DB_URL`. |
 | Backend log says `Port 18080 was already in use` | Pick another port: `$env:HYPERDRIVE_BACKEND_PORT="18081"`, and update `HYPERDRIVE_PUBLIC_BASE_URL`, `HYPERDRIVE_BACKEND_URL` and the Google redirect URI to match. |
 | You must sign in after every restart | Windows encryption (DPAPI) was unavailable to Electron, so the session is memory-only by design (no plaintext fallback). |
@@ -190,7 +205,7 @@ not passed).
 backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions,
             Google Drive and Dropbox connections and read-only browsing
 desktop/    Electron + React desktop app
-agent/      Planned local agent (README only)
+agent/      Java 21 local agent: authenticated loopback status API (no data plane yet)
 vfs/        Planned WinFsp virtual drive (README only)
 docs/       Architecture, authentication, security, development notes, progress log
 compose.yaml, .env.example

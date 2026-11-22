@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import type { AgentStatus } from '../../shared/agent';
+import { AgentStatusCard, agentStateLabel } from './AgentStatusCard';
 import type { SafeUser } from '../../shared/auth';
 import type { StorageApi, StorageProvider } from '../../shared/storage';
 import { CloudAccounts } from './CloudAccounts';
@@ -31,6 +33,9 @@ interface SectionViewProps {
   readonly onConnect: (provider: StorageProvider) => void;
   readonly onCancelConnection: () => void;
   readonly onDismissConnection: () => void;
+  readonly agentStatus: AgentStatus | null;
+  readonly agentRestarting: boolean;
+  readonly onRestartAgent: () => void;
 }
 
 export function SectionView(props: SectionViewProps) {
@@ -62,13 +67,22 @@ export function SectionView(props: SectionViewProps) {
     case 'performance':
       return <Performance />;
     case 'settings':
-      return <Settings user={props.user} backendStatus={props.backendStatus} />;
+      return <Settings user={props.user} backendStatus={props.backendStatus} agentStatus={props.agentStatus} />;
   }
 }
 
 const NO_ACCOUNTS = 'No cloud accounts connected.';
 
-function Overview({ user, backendStatus, onRecheckBackend, onNavigate, accounts }: SectionViewProps) {
+function Overview({
+  user,
+  backendStatus,
+  onRecheckBackend,
+  onNavigate,
+  accounts,
+  agentStatus,
+  agentRestarting,
+  onRestartAgent
+}: SectionViewProps) {
   const connected = accounts.accounts;
   return (
     <section aria-labelledby="overview-title">
@@ -114,6 +128,8 @@ function Overview({ user, backendStatus, onRecheckBackend, onNavigate, accounts 
             View Cloud Accounts
           </button>
         </article>
+
+        <AgentStatusCard status={agentStatus} restarting={agentRestarting} onRestart={onRestartAgent} />
 
         <article className="card" aria-labelledby="drive-card-title">
           <h2 id="drive-card-title">Virtual drive</h2>
@@ -172,7 +188,15 @@ function Performance() {
   );
 }
 
-function Settings({ user, backendStatus }: { user: SafeUser; backendStatus: BackendStatus }) {
+function Settings({
+  user,
+  backendStatus,
+  agentStatus
+}: {
+  user: SafeUser;
+  backendStatus: BackendStatus;
+  agentStatus: AgentStatus | null;
+}) {
   return (
     <section aria-labelledby="settings-title">
       <h1 id="settings-title">Settings</h1>
@@ -194,6 +218,13 @@ function Settings({ user, backendStatus }: { user: SafeUser; backendStatus: Back
         <dd>Development build</dd>
         <dt>Backend</dt>
         <dd>{backendStatus.state === 'checking' ? 'Checking' : backendStatus.state === 'connected' ? 'Connected' : 'Unavailable'}</dd>
+        <dt>Local agent</dt>
+        <dd>
+          {agentStateLabel(agentStatus)}
+          {agentStatus?.state === 'ready' && agentStatus.agentVersion ? ` (version ${agentStatus.agentVersion})` : ''}
+        </dd>
+        <dt>Virtual drive</dt>
+        <dd>Not implemented yet</dd>
       </dl>
     </section>
   );

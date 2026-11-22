@@ -1,7 +1,7 @@
 # HyperDrive architecture
 
 Status labels: **Implemented** (exists and is tested in this repository) and **Planned** (designed,
-not built). Implemented today: the desktop shell, backend health/readiness, Google sign-in
+not built). Implemented today: the local agent's process and status API (Batch 5), the desktop shell, backend health/readiness, Google sign-in
 with HyperDrive accounts and device sessions (Batch 2), Google Drive connection with
 read-only metadata browsing through the backend (Batch 3), and Dropbox plus a unified "All
 storage" browser (Batch 4).
@@ -14,8 +14,10 @@ storage" browser (Batch 4).
           ▼
  ┌─────────────────────┐      local, authenticated IPC      ┌──────────────────────────┐
  │ VFS (C++ + WinFsp)  │ ─────────────────────────────────▶ │ Local agent (Java)       │
- │ PLANNED             │                                    │ PLANNED                  │
- └─────────────────────┘                                    │ • 4 MiB chunk reads      │
+ │ PLANNED             │   transport: OPEN (ADR 0001)       │ IMPLEMENTED: process,    │
+ └─────────────────────┘                                    │ status API (loopback)    │
+                                                            │ PLANNED:                 │
+                                                            │ • 4 MiB chunk reads      │
                                                             │ • on-disk chunk cache ◀──┼── file chunks live HERE
  ┌──────────────────────┐  status / settings (local)        │ • metrics                │
  │ Desktop UI           │ ────────────────────────────────▶ └────────────┬─────────────┘
@@ -48,10 +50,22 @@ Electron main process and sandboxed React renderer (`desktop/`). Implemented:
 The renderer only ever receives auth *status*, never tokens. Later the app will host
 cloud-storage connections, the unified file browser, performance metrics and cache diagnostics.
 
-### Local agent: planned
+### Local agent: implemented as a process and status API (Batch 5)
 
-Java process on the user's machine (`agent/`). It will translate filesystem reads into
-provider range requests, own the local chunk cache, hold device credentials, and collect metrics.
+Java 21 process on the user's machine (`agent/`), started and supervised by the Electron main
+process.
+- **Talks over:** an authenticated loopback HTTP/JSON **status** API on `127.0.0.1`, at an
+  OS-assigned port (`/local/v1/health`, `/local/v1/status`).
+- **Authentication:** a per-launch 256-bit secret sent over stdin, and a validated one-line
+  handshake on stdout.
+- **Lifetime:** stdin also serves as the parent-lifetime channel.
+- **Capabilities:** all reported as `false`.
+
+**Still planned:** translating filesystem reads into provider range requests, the local chunk
+cache and metrics. Provider credentials stay on the backend for now. The content-transfer and
+credential-delegation design, and the VFS transport, are open decisions; see
+[ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md) and
+[local-agent.md](local-agent.md).
 
 ### VFS: planned
 
@@ -145,6 +159,7 @@ user's machine, in the agent's cache directory. They will **not** be stored in R
 | Streaming (range reads) | **Not implemented** | **Not implemented** |
 | Writes (upload/edit/rename/move/delete) | **Not implemented** | **Not implemented** |
 | Mounted drive (WinFsp) | **Not implemented** | **Not implemented** |
+| Local agent reads for this provider | **Not implemented** (agent has no credentials) | **Not implemented** (agent has no credentials) |
 | Live end-to-end verification | Not yet (no OAuth client) | Not yet (no Dropbox app) |
 
 ## Desktop security

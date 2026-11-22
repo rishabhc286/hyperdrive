@@ -25,6 +25,7 @@ export function App({ api, pollIntervalMs }: AppProps) {
         onRecheckBackend={recheck}
         onSignOut={() => void api.auth.signOut()}
         storage={api.storage}
+        agent={api.agent}
         pollIntervalMs={pollIntervalMs}
       />
     );

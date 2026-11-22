@@ -2,6 +2,7 @@
  * Types shared between the Electron main process, the preload script and the renderer.
  * This file must stay free of runtime imports so it can be used in every context.
  */
+import type { AgentApi } from './agent';
 import type { AuthApi } from './auth';
 import type { StorageApi } from './storage';
 
@@ -26,4 +27,5 @@ export interface HyperdriveApi {
   checkBackendHealth(): Promise<BackendHealth>;
   readonly auth: AuthApi;
   readonly storage: StorageApi;
+  readonly agent: AgentApi;
 }
