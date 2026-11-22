@@ -1,6 +1,19 @@
 import type { SafeUser } from '../../shared/auth';
-import type { ConnectedAccount, ConnectionStatus, FilePage, StorageFile } from '../../shared/storage';
-import { parseAccount, parseConnectionStatus, parseFile, parseFilePage } from '../storage/parse';
+import type {
+  ConnectedAccount,
+  ConnectionStatus,
+  FilePage,
+  ProviderAvailability,
+  StorageFile,
+  StorageProvider
+} from '../../shared/storage';
+import { parseAccount, parseConnectionStatus, parseFile, parseFilePage, parseProviders } from '../storage/parse';
+
+/** URL segment per provider in /api/v1/storage-connections/{segment}/... */
+export const PROVIDER_SEGMENT: Readonly<Record<StorageProvider, string>> = {
+  GOOGLE_DRIVE: 'google',
+  DROPBOX: 'dropbox'
+};
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -132,10 +145,13 @@ export class BackendApi {
 
   // --- Cloud storage (Batch 3). Provider tokens never come back from these endpoints. ---
 
-  async createStorageTransaction(accessToken: string): Promise<StorageTransactionCreated> {
-    const body = await this.json(
-      await this.send('POST', '/api/v1/storage-connections/google/transactions', undefined, accessToken, [201])
-    );
+  async listProviders(accessToken: string): Promise<ProviderAvailability[]> {
+    return parseProviders(await this.json(await this.send('GET', '/api/v1/storage-connections/providers', undefined, accessToken)));
+  }
+
+  async createStorageTransaction(accessToken: string, provider: StorageProvider): Promise<StorageTransactionCreated> {
+    const path = `/api/v1/storage-connections/${PROVIDER_SEGMENT[provider]}/transactions`;
+    const body = await this.json(await this.send('POST', path, undefined, accessToken, [201]));
     const { transactionId, authorizationUrl, expiresAt } = body;
     if (typeof transactionId !== 'string' || typeof authorizationUrl !== 'string' || typeof expiresAt !== 'string') {
       throw new UnexpectedResponseError();
@@ -163,13 +179,13 @@ export class BackendApi {
   async listFiles(
     accessToken: string,
     accountId: string,
-    parentId: string | null,
-    pageToken: string | null,
+    directory: string | null,
+    continuation: string | null,
     signal?: AbortSignal
   ): Promise<FilePage> {
     const query = new URLSearchParams();
-    if (parentId) query.set('parentId', parentId);
-    if (pageToken) query.set('pageToken', pageToken);
+    if (directory) query.set('directory', directory);
+    if (continuation) query.set('continuation', continuation);
     const suffix = query.size > 0 ? `?${query.toString()}` : '';
     const path = `/api/v1/accounts/${encodeURIComponent(accountId)}/files${suffix}`;
     return parseFilePage(await this.json(await this.send('GET', path, undefined, accessToken, [200], signal)));

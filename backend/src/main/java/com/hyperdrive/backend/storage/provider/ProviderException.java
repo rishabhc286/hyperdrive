@@ -4,7 +4,7 @@ import java.time.Duration;
 
 /**
  * A provider call failed. The category drives what happens next (refresh, reconnect, retry later,
- * report); the message is safe to log and never contains tokens, file names or emails.
+ * report); the message is safe to log and never contains tokens, file names, paths or emails.
  */
 public final class ProviderException extends RuntimeException {
 
@@ -13,13 +13,17 @@ public final class ProviderException extends RuntimeException {
         AUTHENTICATION,
         /** The grant lacks a required scope; only a new consent helps. */
         INSUFFICIENT_SCOPE,
-        /** The account may not access this item. Not a token problem. */
+        /** The account may not access this item or feature. Not a token problem. */
         PERMISSION_DENIED,
         NOT_FOUND,
         /** Rate or quota limit; {@link #retryAfter()} may say when to try again. */
         RATE_LIMITED,
         /** Network failure, timeout or provider 5xx. */
         UNAVAILABLE,
+        /** A continuation cursor is no longer valid; the listing must start again. */
+        CURSOR_RESET,
+        /** The account's root (e.g. a Dropbox team namespace) is no longer accessible; reconnect. */
+        ROOT_UNAVAILABLE,
         /** The provider answered with something this adapter cannot interpret. */
         INVALID_RESPONSE
     }

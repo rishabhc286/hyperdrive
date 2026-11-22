@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConnectedAccount, StorageApi, StorageError, StorageFile } from '../../shared/storage';
-import { accountLabel, formatDate, formatSize, kindLabel, storageErrorMessage } from './storage-format';
+import { ProviderIcon } from './ProviderIcon';
+import {
+  accountLabel,
+  accountTitle,
+  formatDate,
+  formatSize,
+  kindLabel,
+  providerName,
+  storageErrorMessage
+} from './storage-format';
 import type { AccountsState } from './useStorage';
 
 export interface FilesBrowserProps {
@@ -10,73 +19,94 @@ export interface FilesBrowserProps {
   readonly onOpenAccounts: () => void;
 }
 
+/** A provider directory inside one account. `locator` null = that account's root. */
 interface Crumb {
-  /** Null = the account's root folder (My Drive). */
-  readonly id: string | null;
+  readonly locator: string | null;
   readonly name: string;
 }
 
+/**
+ * Navigation location. "All storage" is a virtual node listing accounts; it is never sent to any
+ * provider API. Inside an account, `path` holds real provider directory locators.
+ */
+type Location = { readonly kind: 'all' } | { readonly kind: 'account'; readonly accountId: string; readonly path: readonly Crumb[] };
+
 type Listing =
   | { readonly status: 'loading' }
-  | { readonly status: 'ready'; readonly items: readonly StorageFile[]; readonly nextPageToken: string | null; readonly loadingMore: boolean; readonly moreError: StorageError | null }
+  | {
+      readonly status: 'ready';
+      readonly items: readonly StorageFile[];
+      readonly continuation: string | null;
+      readonly loadingMore: boolean;
+      readonly moreError: StorageError | null;
+    }
   | { readonly status: 'error'; readonly error: StorageError };
 
 /** A listing tagged with the request it answers; any other key renders as "loading". */
 type KeyedListing = { readonly key: string; readonly listing: Listing };
 
-const ROOT: Crumb = { id: null, name: 'My Drive' };
+const ALL: Location = { kind: 'all' };
 
 /**
- * Read-only folder browser for one connected account. Every request carries a sequence number;
- * a response that belongs to an older account, folder or refresh is dropped, so rapid navigation
- * can never show the wrong folder.
+ * Read-only browser across connected accounts. Every request carries a sequence number and a key
+ * (account + directory path + refresh count); a response for an older account, folder or refresh
+ * is dropped, so rapid navigation or a disconnect can never show the wrong listing. Pagination
+ * state lives inside the keyed listing, so it can't leak between accounts or providers.
  */
 export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccounts }: FilesBrowserProps) {
   const list = accounts.accounts;
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const account = list.find((a) => a.id === selectedId) ?? list.find((a) => a.status === 'CONNECTED') ?? list[0] ?? null;
-  const [path, setPath] = useState<readonly Crumb[]>([ROOT]);
+  const [requested, setRequested] = useState<Location>(ALL);
   const [keyed, setKeyed] = useState<KeyedListing | null>(null);
   const [refreshCount, setRefreshCount] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const seq = useRef(0);
 
-  const folder = path[path.length - 1] ?? ROOT;
+  // A disconnected (or unknown) account falls back to All storage; its listing is never shown again.
+  const account = requested.kind === 'account' ? (list.find((a) => a.id === requested.accountId) ?? null) : null;
+  const location: Location = account ? requested : ALL;
+  const path: readonly Crumb[] = location.kind === 'account' ? location.path : [];
+  const folder = path[path.length - 1] ?? null;
   const accountId = account?.id ?? null;
-  const requestKey = `${accountId ?? ''}|${path.map((c) => c.id ?? '').join('/')}|${refreshCount}`;
-  const listing: Listing = keyed?.key === requestKey ? keyed.listing : { status: 'loading' };
+  const needsReconnect = account?.status === 'NEEDS_RECONNECT';
+  const requestKey = `${accountId ?? ''}|${path.map((c) => c.locator ?? '').join('\u0000')}|${refreshCount}`;
+  const listing: Listing = needsReconnect
+    ? { status: 'error', error: 'needs-reconnect' }
+    : keyed?.key === requestKey
+      ? keyed.listing
+      : { status: 'loading' };
 
   useEffect(() => {
-    if (!accountId) return;
-    const mine = ++seq.current;
+    const mine = ++seq.current; // also invalidates anything in flight when leaving an account
+    if (!accountId || needsReconnect) return;
     void storage
-      .listFiles({ accountId, parentId: folder.id })
+      .listFiles({ accountId, directory: folder?.locator ?? null })
       .catch(() => ({ ok: false as const, error: 'unknown' as const }))
       .then((result) => {
         if (mine !== seq.current) return; // stale: the user moved on
         setKeyed({
           key: requestKey,
           listing: result.ok
-            ? { status: 'ready', items: result.value.items, nextPageToken: result.value.nextPageToken, loadingMore: false, moreError: null }
+            ? { status: 'ready', items: result.value.items, continuation: result.value.continuation, loadingMore: false, moreError: null }
             : { status: 'error', error: result.error }
         });
         if (!result.ok && result.error === 'needs-reconnect') onReloadAccounts();
       });
-  }, [accountId, folder.id, requestKey, storage, onReloadAccounts]);
+  }, [accountId, needsReconnect, folder?.locator, requestKey, storage, onReloadAccounts]);
 
-  const refresh = useCallback(() => {
+  const refresh = () => {
     setNotice(null);
     setRefreshCount((n) => n + 1);
-  }, []);
+    if (!accountId) onReloadAccounts();
+  };
 
   const loadMore = async () => {
-    if (!accountId || listing.status !== 'ready' || !listing.nextPageToken || listing.loadingMore) return;
+    if (!accountId || listing.status !== 'ready' || !listing.continuation || listing.loadingMore) return;
     const mine = ++seq.current;
     const key = requestKey;
-    const token = listing.nextPageToken;
+    const continuation = listing.continuation;
     setKeyed({ key, listing: { ...listing, loadingMore: true, moreError: null } });
     const result = await storage
-      .listFiles({ accountId, parentId: folder.id, pageToken: token })
+      .listFiles({ accountId, directory: folder?.locator ?? null, continuation })
       .catch(() => ({ ok: false as const, error: 'unknown' as const }));
     if (mine !== seq.current) return;
     setKeyed((current) => {
@@ -85,40 +115,54 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
       return {
         key,
         listing: result.ok
-          ? { status: 'ready', items: [...prev.items, ...result.value.items], nextPageToken: result.value.nextPageToken, loadingMore: false, moreError: null }
+          ? {
+              status: 'ready',
+              items: [...prev.items, ...result.value.items],
+              continuation: result.value.continuation,
+              loadingMore: false,
+              moreError: null
+            }
           : { ...prev, loadingMore: false, moreError: result.error }
       };
     });
   };
 
-  const openFolder = (file: StorageFile) => {
+  const openAccount = (target: ConnectedAccount) => {
     setNotice(null);
-    setPath((p) => [...p, { id: file.providerFileId, name: file.name || 'Untitled folder' }]);
+    setRequested({ kind: 'account', accountId: target.id, path: [{ locator: null, name: accountTitle(target) }] });
+  };
+
+  const goTo = (index: number) => {
+    setNotice(null);
+    if (index < 0 || location.kind === 'all') {
+      setRequested(ALL);
+      return;
+    }
+    setRequested({ ...location, path: location.path.slice(0, index + 1) });
   };
 
   const activate = (file: StorageFile) => {
     switch (file.kind) {
       case 'FOLDER':
-        openFolder(file);
+        if (location.kind === 'account' && file.directoryLocator) {
+          setNotice(null);
+          setRequested({ ...location, path: [...location.path, { locator: file.directoryLocator, name: file.name || 'Untitled folder' }] });
+        } else {
+          setNotice(`“${file.name}” can’t be opened: the provider gave no way to list it.`);
+        }
         return;
       case 'SHORTCUT':
-        setNotice(`“${file.name}” is a shortcut. Following shortcuts isn’t implemented yet.`);
+        setNotice(`“${file.name}” is a ${kindLabel(file).toLowerCase()}. Following shortcuts and links isn’t implemented yet.`);
         return;
       case 'PROVIDER_DOCUMENT':
         setNotice(
-          `“${file.name}” is a ${kindLabel(file)} document. It has no downloadable file of its own, and opening or exporting it isn’t implemented yet.`
+          `“${file.name}” is a ${kindLabel(file)} item. It has no downloadable file of its own, and opening or exporting it isn’t implemented yet.`
         );
         return;
       case 'FILE':
         setNotice(`Opening “${file.name}” isn’t implemented yet. This build only shows file details.`);
         return;
     }
-  };
-
-  const selectAccount = (id: string) => {
-    setSelectedId(id);
-    setPath([ROOT]);
-    setNotice(null);
   };
 
   if (list.length === 0) {
@@ -131,7 +175,7 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
           <div className="empty">
             <p className="empty-title">No files to show.</p>
             <div className="muted">
-              <p>Connect a Google Drive account to browse its files here.</p>
+              <p>Connect a Google Drive or Dropbox account to browse its files here.</p>
               <button type="button" className="button" onClick={onOpenAccounts}>
                 Go to Cloud Accounts
               </button>
@@ -147,53 +191,60 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
       <h1 id="files-title">Files</h1>
       <div className="files-toolbar">
         <label className="field-label" htmlFor="files-account">
-          Account
+          Location
         </label>
         <select
           id="files-account"
           className="input select"
-          value={account?.id ?? ''}
-          onChange={(e) => selectAccount(e.target.value)}
+          value={accountId ?? 'all'}
+          onChange={(e) => {
+            const target = list.find((a) => a.id === e.target.value);
+            if (target) openAccount(target);
+            else goTo(-1);
+          }}
         >
-          {list.map((a: ConnectedAccount) => (
+          <option value="all">All storage</option>
+          {list.map((a) => (
             <option key={a.id} value={a.id}>
-              Google Drive · {accountLabel(a)}
+              {accountTitle(a)}
               {a.status === 'NEEDS_RECONNECT' ? ' (needs reconnect)' : ''}
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className="button button-secondary button-small"
-          onClick={refresh}
-          disabled={!accountId}
-        >
+        <button type="button" className="button button-secondary button-small" onClick={refresh}>
           Refresh
         </button>
       </div>
 
       <nav aria-label="Folder path" className="breadcrumbs">
         <ol>
-          {path.map((crumb, index) => {
-            const last = index === path.length - 1;
-            return (
-              <li key={`${crumb.id ?? 'root'}-${index}`}>
-                {last ? (
-                  <span aria-current="page">{crumb.name}</span>
-                ) : (
-                  <button type="button" className="link-button" onClick={() => setPath(path.slice(0, index + 1))}>
-                    {crumb.name}
-                  </button>
-                )}
-              </li>
-            );
-          })}
+          <li>
+            {location.kind === 'all' ? (
+              <span aria-current="page">All storage</span>
+            ) : (
+              <button type="button" className="link-button" onClick={() => goTo(-1)}>
+                All storage
+              </button>
+            )}
+          </li>
+          {path.map((crumb, index) => (
+            <li key={`${crumb.locator ?? 'root'}-${index}`}>
+              {index === path.length - 1 ? (
+                <span aria-current="page">{crumb.name}</span>
+              ) : (
+                <button type="button" className="link-button" onClick={() => goTo(index)}>
+                  {crumb.name}
+                </button>
+              )}
+            </li>
+          ))}
         </ol>
       </nav>
 
       <p className="muted small">
-        Read-only view of My Drive (not shared drives or “Shared with me”). Opening, downloading and caching files
-        aren’t implemented yet: nothing is cached on this PC.
+        {account ? scopeNote(account) : 'Each connected account has its own folder tree; open one to browse it.'} Opening,
+        downloading and caching files aren’t implemented yet: nothing is cached on this PC, and the virtual drive is not
+        implemented yet.
       </p>
 
       {notice && (
@@ -202,14 +253,58 @@ export function FilesBrowser({ storage, accounts, onReloadAccounts, onOpenAccoun
         </div>
       )}
 
-      <ListingView
-        listing={listing}
-        onActivate={activate}
-        onLoadMore={() => void loadMore()}
-        onRetry={refresh}
-        onOpenAccounts={onOpenAccounts}
-      />
+      {location.kind === 'all' || !account ? (
+        <AllStorage accounts={list} onOpen={openAccount} />
+      ) : (
+        <ListingView
+          listing={listing}
+          onActivate={activate}
+          onLoadMore={() => void loadMore()}
+          onRetry={refresh}
+          onOpenAccounts={onOpenAccounts}
+        />
+      )}
     </section>
+  );
+}
+
+function scopeNote(account: ConnectedAccount): string {
+  if (account.provider === 'DROPBOX') {
+    return account.rootType === 'TEAM'
+      ? 'Read-only view of this Dropbox team space (the folders this member can access).'
+      : 'Read-only view of this Dropbox account.';
+  }
+  return 'Read-only view of My Drive (not shared drives or “Shared with me”).';
+}
+
+/** The virtual root: one row per connected account, never a merged file list. */
+function AllStorage({ accounts, onOpen }: { accounts: readonly ConnectedAccount[]; onOpen: (a: ConnectedAccount) => void }) {
+  return (
+    <table className="files-table" aria-label="All storage">
+      <thead>
+        <tr>
+          <th scope="col">Account</th>
+          <th scope="col">Provider</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {accounts.map((a) => (
+          <tr key={a.id}>
+            <td>
+              <button type="button" className="link-button" onClick={() => onOpen(a)} aria-label={`Open ${accountTitle(a)}`}>
+                <ProviderIcon provider={a.provider} /> {accountLabel(a)}
+              </button>
+            </td>
+            <td>
+              {providerName(a.provider)}
+              {a.rootType === 'TEAM' ? ' (team space)' : ''}
+            </td>
+            <td>{a.status === 'NEEDS_RECONNECT' ? 'Needs reconnect' : 'Connected · read-only'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -244,7 +339,7 @@ function ListingView({
             </button>
           ) : (
             <button type="button" className="button button-small" onClick={onRetry}>
-              Try again
+              {listing.error === 'continuation-expired' ? 'Refresh' : 'Try again'}
             </button>
           )}
         </div>
@@ -267,6 +362,7 @@ function ListingView({
             <th scope="col">Type</th>
             <th scope="col">Size</th>
             <th scope="col">Modified</th>
+            <th scope="col">Cache</th>
           </tr>
         </thead>
         <tbody>
@@ -289,6 +385,7 @@ function ListingView({
               <td>{kindLabel(file)}</td>
               <td>{formatSize(file.sizeBytes)}</td>
               <td>{formatDate(file.modifiedAt)}</td>
+              <td>{file.kind === 'FOLDER' ? '—' : 'Not cached'}</td>
             </tr>
           ))}
         </tbody>
@@ -298,7 +395,7 @@ function ListingView({
           More items couldn’t be loaded. {storageErrorMessage(listing.moreError)}
         </div>
       )}
-      {listing.nextPageToken && (
+      {listing.continuation && (
         <button type="button" className="button button-secondary" onClick={onLoadMore} disabled={listing.loadingMore}>
           {listing.loadingMore ? 'Loading more…' : 'Load more'}
         </button>

@@ -2,7 +2,8 @@ package com.hyperdrive.backend.storage.account;
 
 import com.hyperdrive.backend.config.ConditionalOnAuthEnabled;
 import com.hyperdrive.backend.storage.account.ConnectedAccount.Status;
-import com.hyperdrive.backend.storage.connect.GoogleStorageOAuth.ProviderIdentity;
+import com.hyperdrive.backend.storage.provider.AccountRoot;
+import com.hyperdrive.backend.storage.provider.ProviderIdentity;
 import com.hyperdrive.backend.storage.provider.StorageProvider;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -27,15 +28,15 @@ import org.springframework.stereotype.Service;
 @ConditionalOnAuthEnabled
 public class ConnectedAccountService {
 
-    /** Internal view used by browsing: includes the provider's root folder id. */
-    public record OwnedAccount(UUID id, UUID userId, StorageProvider provider, Status status, String rootFolderId) {
+    /** Internal view used by browsing: includes the provider's root information. */
+    public record OwnedAccount(UUID id, UUID userId, StorageProvider provider, Status status, AccountRoot root) {
     }
 
     public record Upserted(UUID accountId, boolean reconnected) {
     }
 
     private static final String COLUMNS = """
-            id, provider, display_name, provider_email, status, granted_scopes, connected_at, updated_at,
+            id, provider, display_name, provider_email, status, root_type, granted_scopes, connected_at, updated_at,
             last_success_at, last_error_code
             """;
 
@@ -63,13 +64,13 @@ public class ConnectedAccountService {
 
     public Optional<OwnedAccount> findOwned(UUID userId, UUID accountId) {
         return jdbc.sql("""
-                SELECT id, user_id, provider, status, root_folder_id FROM connected_accounts
+                SELECT id, user_id, provider, status, root_folder_id, root_namespace_id FROM connected_accounts
                 WHERE id = :id AND user_id = :userId
                 """)
                 .param("id", accountId).param("userId", userId)
                 .query((rs, n) -> new OwnedAccount(rs.getObject("id", UUID.class), rs.getObject("user_id", UUID.class),
                         StorageProvider.valueOf(rs.getString("provider")), Status.valueOf(rs.getString("status")),
-                        rs.getString("root_folder_id")))
+                        new AccountRoot(rs.getString("root_folder_id"), rs.getString("root_namespace_id"))))
                 .optional();
     }
 
@@ -77,18 +78,19 @@ public class ConnectedAccountService {
      * Creates the connection, or updates the user's existing connection to the same provider
      * account (reconnect). Must run inside the caller's transaction together with the credentials.
      */
-    public Upserted upsert(UUID userId, StorageProvider provider, ProviderIdentity identity, String rootFolderId,
-            Set<String> grantedScopes) {
+    public Upserted upsert(UUID userId, StorageProvider provider, ProviderIdentity identity, AccountRoot root,
+            String rootType, Set<String> grantedScopes) {
         OffsetDateTime now = utc(clock.instant());
         return jdbc.sql("""
                 INSERT INTO connected_accounts (id, user_id, provider, provider_issuer, provider_account_id, display_name,
-                                                provider_email, root_folder_id, status, granted_scopes, connected_at,
-                                                updated_at, last_success_at)
-                VALUES (:id, :userId, :provider, :issuer, :subject, :name, :email, :root, 'CONNECTED', :scopes, :now,
-                        :now, :now)
+                                                provider_email, root_folder_id, root_namespace_id, root_type, status,
+                                                granted_scopes, connected_at, updated_at, last_success_at)
+                VALUES (:id, :userId, :provider, :issuer, :subject, :name, :email, :root, :namespace, :rootType,
+                        'CONNECTED', :scopes, :now, :now, :now)
                 ON CONFLICT (user_id, provider, provider_account_id) DO UPDATE
                 SET display_name = EXCLUDED.display_name, provider_email = EXCLUDED.provider_email,
                     provider_issuer = EXCLUDED.provider_issuer, root_folder_id = EXCLUDED.root_folder_id,
+                    root_namespace_id = EXCLUDED.root_namespace_id, root_type = EXCLUDED.root_type,
                     status = 'CONNECTED', granted_scopes = EXCLUDED.granted_scopes, updated_at = EXCLUDED.updated_at,
                     last_success_at = EXCLUDED.last_success_at, last_error_code = NULL
                 RETURNING id, (xmax <> 0) AS reconnected
@@ -100,7 +102,9 @@ public class ConnectedAccountService {
                 .param("subject", identity.subject())
                 .param("name", identity.displayName())
                 .param("email", identity.email())
-                .param("root", rootFolderId)
+                .param("root", root.rootFolderId())
+                .param("namespace", root.rootNamespaceId())
+                .param("rootType", rootType)
                 .param("scopes", String.join(" ", new TreeSet<>(grantedScopes)))
                 .param("now", now)
                 .query((rs, n) -> new Upserted(rs.getObject("id", UUID.class), rs.getBoolean("reconnected")))
@@ -148,6 +152,7 @@ public class ConnectedAccountService {
                 rs.getString("display_name"),
                 rs.getString("provider_email"),
                 Status.valueOf(rs.getString("status")),
+                rs.getString("root_type"),
                 scopes.isBlank() ? List.of() : Arrays.asList(scopes.split(" ")),
                 instant(rs, "connected_at"),
                 instant(rs, "updated_at"),

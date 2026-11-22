@@ -45,7 +45,7 @@ describe('StorageManager: connection start', () => {
     const { manager, openExternal, fetchImpl } = setup(() =>
       json(201, { transactionId: TX, authorizationUrl: TICKET_URL, expiresAt: '2026-11-22T10:10:00Z' })
     );
-    const result = await manager.beginGoogleConnection();
+    const result = await manager.beginConnection('GOOGLE_DRIVE');
     expect(result).toEqual({ ok: true, value: { transactionId: TX, expiresAt: '2026-11-22T10:10:00Z' } });
     expect(openExternal).toHaveBeenCalledWith(TICKET_URL);
     const [url, init] = fetchImpl.mock.calls[0]!;
@@ -64,14 +64,34 @@ describe('StorageManager: connection start', () => {
     const { manager, openExternal } = setup(() =>
       json(201, { transactionId: TX, authorizationUrl, expiresAt: '2026-11-22T10:10:00Z' })
     );
-    expect(await manager.beginGoogleConnection()).toEqual({ ok: false, error: 'unknown' });
+    expect(await manager.beginConnection('GOOGLE_DRIVE')).toEqual({ ok: false, error: 'unknown' });
     expect(openExternal).not.toHaveBeenCalled();
   });
 
+  it('opens the Dropbox authorize URL only for a Dropbox request', async () => {
+    const dropboxUrl = `${ORIGIN}/api/v1/storage-connections/dropbox/authorize/hds_${'b'.repeat(43)}`;
+    const { manager, openExternal, fetchImpl } = setup(() =>
+      json(201, { transactionId: TX, authorizationUrl: dropboxUrl, expiresAt: '2026-11-22T10:10:00Z' })
+    );
+    expect((await manager.beginConnection('DROPBOX')).ok).toBe(true);
+    expect(fetchImpl.mock.calls[0]![0].pathname).toBe('/api/v1/storage-connections/dropbox/transactions');
+    expect(openExternal).toHaveBeenCalledWith(dropboxUrl);
+
+    // A Google request answered with a Dropbox URL (or vice versa) is refused.
+    openExternal.mockClear();
+    expect(await manager.beginConnection('GOOGLE_DRIVE')).toEqual({ ok: false, error: 'unknown' });
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it('reports an unconfigured provider distinctly', async () => {
+    const { manager } = setup(() => json(503, { code: 'provider_not_configured' }));
+    expect(await manager.beginConnection('DROPBOX')).toEqual({ ok: false, error: 'not-configured' });
+  });
+
   it('validates storage authorize URLs strictly', () => {
-    expect(isTrustedStorageAuthorizeUrl(TICKET_URL, ORIGIN)).toBe(true);
-    expect(isTrustedStorageAuthorizeUrl(TICKET_URL, 'http://127.0.0.1:18081')).toBe(false);
-    expect(isTrustedStorageAuthorizeUrl('not a url', ORIGIN)).toBe(false);
+    expect(isTrustedStorageAuthorizeUrl(TICKET_URL, ORIGIN, 'GOOGLE_DRIVE')).toBe(true);
+    expect(isTrustedStorageAuthorizeUrl(TICKET_URL, 'http://127.0.0.1:18081', 'GOOGLE_DRIVE')).toBe(false);
+    expect(isTrustedStorageAuthorizeUrl('not a url', ORIGIN, 'GOOGLE_DRIVE')).toBe(false);
   });
 });
 
@@ -93,9 +113,9 @@ describe('StorageManager: transaction status', () => {
       if (url.pathname.endsWith('/cancel')) return json(200, { ...status, status: 'CANCELLED', errorCode: 'cancelled' });
       return json(200, status);
     });
-    await manager.beginGoogleConnection();
+    await manager.beginConnection('GOOGLE_DRIVE');
     const polled = await manager.getConnectionStatus(TX);
-    expect(polled).toEqual({ ok: true, value: { transactionId: TX, status: 'PENDING', browserOpened: true,
+    expect(polled).toEqual({ ok: true, value: { transactionId: TX, provider: 'GOOGLE_DRIVE', status: 'PENDING', browserOpened: true,
       expiresAt: '2026-11-22T10:10:00Z', accountId: null, reconnected: null, errorCode: null } });
     const cancelled = await manager.cancelConnection(TX);
     expect(cancelled.ok && cancelled.value.status).toBe('CANCELLED');
@@ -117,7 +137,7 @@ describe('StorageManager: accounts and files', () => {
       return json(200, {
         items: [{ providerFileId: 'f1', name: 'a.pdf', kind: 'FILE', mimeType: 'application/pdf', sizeBytes: 5,
           modifiedAt: null, canDownload: true, shortcutTargetId: null, shortcutTargetMimeType: null, token: 'ya29.leak' }],
-        nextPageToken: null,
+        continuation: null,
         accessToken: 'ya29.leak'
       });
     });
@@ -128,13 +148,13 @@ describe('StorageManager: accounts and files', () => {
     expect(accounts.ok && accounts.value[0]!.email).toBe('owner@example.com');
   });
 
-  it('sends parentId and pageToken as query parameters', async () => {
-    const { manager, fetchImpl } = setup(() => json(200, { items: [], nextPageToken: null }));
-    await manager.listFiles({ accountId: ACCOUNT, parentId: 'folder_1', pageToken: 'page~2' });
+  it('sends directory and continuation as query parameters', async () => {
+    const { manager, fetchImpl } = setup(() => json(200, { items: [], continuation: null }));
+    await manager.listFiles({ accountId: ACCOUNT, directory: 'folder_1', continuation: 'hdk_page2' });
     const [url] = fetchImpl.mock.calls[0]!;
     expect(url.pathname).toBe(`/api/v1/accounts/${ACCOUNT}/files`);
-    expect(url.searchParams.get('parentId')).toBe('folder_1');
-    expect(url.searchParams.get('pageToken')).toBe('page~2');
+    expect(url.searchParams.get('directory')).toBe('folder_1');
+    expect(url.searchParams.get('continuation')).toBe('hdk_page2');
   });
 
   it('rejects malformed backend data instead of passing it on', async () => {
@@ -148,7 +168,7 @@ describe('StorageManager: accounts and files', () => {
       if (init.method === 'DELETE') return new Response(null, { status: 204 });
       return new Promise<Response>((resolve, reject) => {
         init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
-        release = () => resolve(json(200, { items: [], nextPageToken: null }));
+        release = () => resolve(json(200, { items: [], continuation: null }));
       });
     });
     const listing = manager.listFiles({ accountId: ACCOUNT });
@@ -172,6 +192,6 @@ describe('StorageManager: accounts and files', () => {
   it('reports a misconfigured backend as unreachable without throwing', async () => {
     const manager = new StorageManager({ api: null, withAccessToken: (c) => c('t'), openExternal: vi.fn() });
     expect(await manager.listAccounts()).toEqual({ ok: false, error: 'backend-unreachable' });
-    expect(await manager.beginGoogleConnection()).toEqual({ ok: false, error: 'backend-unreachable' });
+    expect(await manager.beginConnection('GOOGLE_DRIVE')).toEqual({ ok: false, error: 'backend-unreachable' });
   });
 });

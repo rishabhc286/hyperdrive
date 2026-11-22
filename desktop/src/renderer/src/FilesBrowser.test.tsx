@@ -5,175 +5,236 @@ import { createMockApi, ONBOARDED_USER, status } from '../../../test/mock-api';
 import type { ConnectedAccount, FilePage, StorageFile, StorageResult } from '../../shared/storage';
 import { App } from './App';
 
-const ACCOUNT: ConnectedAccount = {
+const DRIVE: ConnectedAccount = {
   id: '6f1c2a8e-1b2c-4d3e-8f90-123456789abc',
   provider: 'GOOGLE_DRIVE',
   displayName: 'Drive Owner',
   email: 'drive.owner@example.com',
   status: 'CONNECTED',
+  rootType: null,
   connectedAt: '2026-11-22T10:00:00Z',
   lastSuccessAt: null,
   lastErrorCode: null
 };
-const SECOND: ConnectedAccount = { ...ACCOUNT, id: '7f1c2a8e-1b2c-4d3e-8f90-123456789abc', email: 'work@example.com' };
+const BOX: ConnectedAccount = {
+  ...DRIVE,
+  id: '7a1c2a8e-1b2c-4d3e-8f90-123456789abc',
+  provider: 'DROPBOX',
+  email: 'box.owner@example.com',
+  rootType: 'USER'
+};
 
 function file(id: string, name: string, extra: Partial<StorageFile> = {}): StorageFile {
   return { providerFileId: id, name, kind: 'FILE', mimeType: 'application/pdf', sizeBytes: 2048,
-    modifiedAt: '2026-02-03T04:05:06Z', canDownload: true, shortcutTargetId: null, shortcutTargetMimeType: null, ...extra };
+    modifiedAt: '2026-02-03T04:05:06Z', canDownload: true, directoryLocator: null, providerRevision: null,
+    contentHash: null, contentHashAlgorithm: null, shortcutTargetId: null, shortcutTargetMimeType: null, ...extra };
 }
-const folder = (id: string, name: string) =>
-  file(id, name, { kind: 'FOLDER', mimeType: 'application/vnd.google-apps.folder', sizeBytes: null, canDownload: false });
-const page = (items: StorageFile[], nextPageToken: string | null = null): StorageResult<FilePage> => ({
+const driveFolder = (id: string, name: string) =>
+  file(id, name, { kind: 'FOLDER', mimeType: 'application/vnd.google-apps.folder', sizeBytes: null, canDownload: false, directoryLocator: id });
+const boxFolder = (path: string, name: string) =>
+  file(`id:${name}`, name, { kind: 'FOLDER', mimeType: null, sizeBytes: null, modifiedAt: null, canDownload: false, directoryLocator: path });
+const page = (items: StorageFile[], continuation: string | null = null): StorageResult<FilePage> => ({
   ok: true,
-  value: { items, nextPageToken }
+  value: { items, continuation }
 });
 
-async function openFiles(setup: (mock: ReturnType<typeof createMockApi>) => void) {
+async function openFiles(setup: (mock: ReturnType<typeof createMockApi>) => void, accounts: ConnectedAccount[] = [DRIVE, BOX]) {
   const mock = createMockApi(status('signed-in', { user: ONBOARDED_USER }));
-  mock.storage.listAccounts.mockResolvedValue({ ok: true, value: [ACCOUNT] });
+  mock.storage.listAccounts.mockResolvedValue({ ok: true, value: accounts });
   setup(mock);
   render(<App api={mock.api} />);
   await userEvent.click(await screen.findByRole('button', { name: 'Files' }));
   return mock;
 }
 
-describe('Files: browsing', () => {
-  it('lists the root folder with honest type, size and date columns', async () => {
+const crumbs = () => screen.getByRole('navigation', { name: 'Folder path' });
+const openAccount = async (title: string) => userEvent.click(await screen.findByRole('button', { name: `Open ${title}` }));
+
+describe('Files: All storage', () => {
+  it('starts at a virtual root listing accounts, without calling any provider', async () => {
+    const mock = await openFiles(() => undefined);
+    const table = await screen.findByRole('table', { name: 'All storage' });
+    expect(within(table).getByText('drive.owner@example.com')).toBeInTheDocument();
+    expect(within(table).getByText('box.owner@example.com')).toBeInTheDocument();
+    expect(within(table).getByText('Dropbox')).toBeInTheDocument();
+    expect(within(crumbs()).getByText('All storage')).toHaveAttribute('aria-current', 'page');
+    expect(mock.storage.listFiles).not.toHaveBeenCalled();
+  });
+
+  it('opening an account lists its root; the virtual root id never reaches the provider API', async () => {
+    const mock = await openFiles((m) => m.storage.listFiles.mockResolvedValue(page([file('b1', 'notes.txt', { mimeType: null })])));
+    await openAccount('Dropbox — box.owner@example.com');
+    expect(await screen.findByText('notes.txt')).toBeInTheDocument();
+    expect(mock.storage.listFiles).toHaveBeenCalledWith({ accountId: BOX.id, directory: null });
+    expect(within(crumbs()).getByText('Dropbox — box.owner@example.com')).toHaveAttribute('aria-current', 'page');
+    // Dropbox has no MIME type: the label comes from the extension only.
+    expect(screen.getByRole('table')).toHaveTextContent('TXT file');
+  });
+
+  it('renders both providers in the same table with honest cache and missing-metadata cells', async () => {
     await openFiles((m) =>
-      m.storage.listFiles.mockResolvedValue(
-        page([
-          folder('fA', 'Projects'),
-          file('f1', 'report.pdf', { sizeBytes: 1536 }),
-          file('d1', 'Notes', { kind: 'PROVIDER_DOCUMENT', mimeType: 'application/vnd.google-apps.document', sizeBytes: null, canDownload: false }),
-          file('s1', 'Link', { kind: 'SHORTCUT', mimeType: 'application/vnd.google-apps.shortcut', sizeBytes: null, shortcutTargetId: 'fA', shortcutTargetMimeType: 'application/vnd.google-apps.folder' }),
-          file('u1', 'mystery', { mimeType: 'application/octet-stream', sizeBytes: null, modifiedAt: null })
-        ])
+      m.storage.listFiles.mockImplementation(({ accountId }) =>
+        Promise.resolve(
+          accountId === DRIVE.id
+            ? page([driveFolder('fA', 'Projects'), file('f1', 'report.pdf', { sizeBytes: 1536 })])
+            : page([
+                boxFolder('/photos', 'Photos'),
+                file('id:x', 'mystery', { mimeType: null, sizeBytes: null, modifiedAt: null }),
+                file('id:p', 'Notes.paper', { kind: 'PROVIDER_DOCUMENT', mimeType: null, sizeBytes: null, canDownload: false }),
+                file('id:l', 'Link', { kind: 'SHORTCUT', mimeType: null, sizeBytes: null, canDownload: false })
+              ])
+        )
       )
     );
-    const table = await screen.findByRole('table');
-    const rows = within(table).getAllByRole('row');
-    expect(rows).toHaveLength(6);
-    expect(rows[1]).toHaveTextContent('Projects');
+    await openAccount('Google Drive — drive.owner@example.com');
+    let rows = within(await screen.findByRole('table')).getAllByRole('row');
     expect(rows[1]).toHaveTextContent('Folder');
-    expect(rows[2]).toHaveTextContent('PDF');
     expect(rows[2]).toHaveTextContent('1.5 KB');
-    expect(rows[3]).toHaveTextContent('Google Docs');
-    expect(rows[4]).toHaveTextContent('Shortcut to folder');
-    expect(rows[5]).toHaveTextContent('—');
-    expect(screen.getByText(/nothing is cached on this PC/)).toBeInTheDocument();
-    expect(screen.getByRole('navigation', { name: 'Folder path' })).toHaveTextContent('My Drive');
-  });
+    expect(rows[2]).toHaveTextContent('Not cached');
 
-  it('opens folders, shows breadcrumbs and navigates back', async () => {
+    await userEvent.selectOptions(screen.getByLabelText('Location'), BOX.id);
+    await screen.findByText('Photos');
+    rows = within(screen.getByRole('table')).getAllByRole('row');
+    expect(rows[2]).toHaveTextContent('File');
+    expect(within(rows[2]!).getAllByText('—').length).toBeGreaterThanOrEqual(2);
+    expect(rows[3]).toHaveTextContent('Cloud document');
+    expect(rows[4]).toHaveTextContent('Link');
+    expect(document.body.textContent).not.toMatch(/Mounted|H:\\|cached on this PC:/);
+    expect(screen.getByText(/virtual drive is not implemented yet/)).toBeInTheDocument();
+  });
+});
+
+describe('Files: navigation', () => {
+  it('opens Dropbox folders by their locator, keeps breadcrumbs and returns to All storage', async () => {
     const mock = await openFiles((m) =>
-      m.storage.listFiles.mockImplementation(({ parentId }) =>
-        Promise.resolve(parentId === 'fA' ? page([file('in1', 'inside.pdf')]) : page([folder('fA', 'Projects')]))
+      m.storage.listFiles.mockImplementation(({ directory }) =>
+        Promise.resolve(directory === '/photos' ? page([file('id:p1', 'beach.jpg', { mimeType: null })]) : page([boxFolder('/photos', 'Photos')]))
       )
     );
-    await userEvent.click(await screen.findByRole('button', { name: 'Open folder Projects' }));
+    await openAccount('Dropbox — box.owner@example.com');
+    await userEvent.click(await screen.findByRole('button', { name: 'Open folder Photos' }));
+    expect(await screen.findByText('beach.jpg')).toBeInTheDocument();
+    expect(mock.storage.listFiles).toHaveBeenLastCalledWith({ accountId: BOX.id, directory: '/photos' });
+    expect(within(crumbs()).getByText('Photos')).toHaveAttribute('aria-current', 'page');
 
-    expect(await screen.findByText('inside.pdf')).toBeInTheDocument();
-    const crumbs = screen.getByRole('navigation', { name: 'Folder path' });
-    expect(within(crumbs).getByText('Projects')).toHaveAttribute('aria-current', 'page');
-    expect(mock.storage.listFiles).toHaveBeenLastCalledWith({ accountId: ACCOUNT.id, parentId: 'fA' });
-
-    await userEvent.click(within(crumbs).getByRole('button', { name: 'My Drive' }));
-    expect(await screen.findByRole('button', { name: 'Open folder Projects' })).toBeInTheDocument();
-    expect(mock.storage.listFiles).toHaveBeenLastCalledWith({ accountId: ACCOUNT.id, parentId: null });
+    await userEvent.click(within(crumbs()).getByRole('button', { name: 'Dropbox — box.owner@example.com' }));
+    expect(await screen.findByRole('button', { name: 'Open folder Photos' })).toBeInTheDocument();
+    await userEvent.click(within(crumbs()).getByRole('button', { name: 'All storage' }));
+    expect(await screen.findByRole('table', { name: 'All storage' })).toBeInTheDocument();
   });
 
-  it('loads more items with the provider cursor', async () => {
+  it('switching accounts resets the path and never mixes pagination state', async () => {
     const mock = await openFiles((m) =>
-      m.storage.listFiles.mockImplementation(({ pageToken }) =>
-        Promise.resolve(pageToken === 'next~1' ? page([file('b', 'b.pdf')]) : page([file('a', 'a.pdf')], 'next~1'))
-      )
-    );
-    await screen.findByText('a.pdf');
-    await userEvent.click(screen.getByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText('b.pdf')).toBeInTheDocument();
-    expect(screen.getByText('a.pdf')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
-    expect(mock.storage.listFiles).toHaveBeenLastCalledWith({ accountId: ACCOUNT.id, parentId: null, pageToken: 'next~1' });
-  });
-
-  it('ignores a slow response from a folder the user already left', async () => {
-    let releaseSlow: (() => void) | null = null;
-    await openFiles((m) =>
-      m.storage.listFiles.mockImplementation(({ parentId }) => {
-        if (parentId === 'slow') {
-          return new Promise((resolve) => {
-            releaseSlow = () => resolve(page([file('x', 'from-slow-folder.pdf')]));
-          });
+      m.storage.listFiles.mockImplementation(({ accountId, continuation }) => {
+        if (accountId === DRIVE.id) {
+          return Promise.resolve(continuation ? page([file('d2', 'drive-2.pdf')]) : page([file('d1', 'drive-1.pdf')], 'hdk_drive_next'));
         }
-        if (parentId === 'fast') return Promise.resolve(page([file('y', 'from-fast-folder.pdf')]));
-        return Promise.resolve(page([folder('slow', 'Slow'), folder('fast', 'Fast')]));
+        return Promise.resolve(continuation ? page([file('id:b2', 'box-2.txt')]) : page([file('id:b1', 'box-1.txt')], 'hdk_box_next'));
       })
     );
-    await userEvent.click(await screen.findByRole('button', { name: 'Open folder Slow' }));
-    // Go back and into another folder before the first one answers.
-    await userEvent.click(within(screen.getByRole('navigation', { name: 'Folder path' })).getByRole('button', { name: 'My Drive' }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Open folder Fast' }));
-    expect(await screen.findByText('from-fast-folder.pdf')).toBeInTheDocument();
+    await openAccount('Google Drive — drive.owner@example.com');
+    await screen.findByText('drive-1.pdf');
+    await userEvent.selectOptions(screen.getByLabelText('Location'), BOX.id);
+    await screen.findByText('box-1.txt');
+    expect(screen.queryByText('drive-1.pdf')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('box-2.txt')).toBeInTheDocument();
+    expect(mock.storage.listFiles).toHaveBeenLastCalledWith({ accountId: BOX.id, directory: null, continuation: 'hdk_box_next' });
+    expect(mock.storage.listFiles).not.toHaveBeenCalledWith(expect.objectContaining({ accountId: BOX.id, continuation: 'hdk_drive_next' }));
+  });
+
+  it('ignores a slow response from an account the user already left', async () => {
+    let releaseSlow: (() => void) | null = null;
+    await openFiles((m) =>
+      m.storage.listFiles.mockImplementation(({ accountId }) => {
+        if (accountId === DRIVE.id) {
+          return new Promise((resolve) => {
+            releaseSlow = () => resolve(page([file('x', 'from-drive.pdf')]));
+          });
+        }
+        return Promise.resolve(page([file('id:y', 'from-dropbox.txt')]));
+      })
+    );
+    await openAccount('Google Drive — drive.owner@example.com');
+    await userEvent.selectOptions(screen.getByLabelText('Location'), BOX.id);
+    expect(await screen.findByText('from-dropbox.txt')).toBeInTheDocument();
 
     releaseSlow!();
     await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByText('from-slow-folder.pdf')).not.toBeInTheDocument();
-    expect(screen.getByText('from-fast-folder.pdf')).toBeInTheDocument();
+    expect(screen.queryByText('from-drive.pdf')).not.toBeInTheDocument();
+    // The late response must not replace (or blank) the current listing either.
+    expect(screen.getByText('from-dropbox.txt')).toBeInTheDocument();
   });
 
-  it('shows an empty folder state', async () => {
-    await openFiles((m) => m.storage.listFiles.mockResolvedValue(page([])));
-    expect(await screen.findByText('This folder is empty.')).toBeInTheDocument();
-  });
-
-  it('explains that opening files and documents is not implemented', async () => {
-    await openFiles((m) =>
-      m.storage.listFiles.mockResolvedValue(
-        page([file('f1', 'report.pdf'), file('d1', 'Notes', { kind: 'PROVIDER_DOCUMENT', mimeType: 'application/vnd.google-apps.document', sizeBytes: null, canDownload: false })])
+  it('a disconnect during an in-flight listing removes the account and drops its response', async () => {
+    let release: (() => void) | null = null;
+    const mock = await openFiles((m) =>
+      m.storage.listFiles.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(page([file('id:late', 'late.txt')]));
+          })
       )
     );
-    await userEvent.click(await screen.findByRole('button', { name: 'report.pdf (PDF)' }));
-    expect(screen.getByText(/Opening “report.pdf” isn’t implemented yet/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Notes (Google Docs)' }));
-    expect(screen.getByText(/has no downloadable file of its own/)).toBeInTheDocument();
+    await openAccount('Dropbox — box.owner@example.com');
+    await waitFor(() => expect(release).not.toBeNull());
+
+    // Disconnect elsewhere (Cloud Accounts), then come back.
+    mock.storage.listAccounts.mockResolvedValue({ ok: true, value: [DRIVE] });
+    await userEvent.click(screen.getByRole('button', { name: 'Cloud Accounts' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect Dropbox box.owner@example.com' }));
+    await userEvent.click(within(screen.getByRole('group', { name: /Confirm/ })).getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => expect(screen.queryByText('box.owner@example.com')).not.toBeInTheDocument());
+    release!();
+    await userEvent.click(screen.getByRole('button', { name: 'Files' }));
+
+    expect(await screen.findByRole('table', { name: 'All storage' })).toBeInTheDocument();
+    expect(screen.queryByText('box.owner@example.com')).not.toBeInTheDocument();
+    expect(screen.queryByText('late.txt')).not.toBeInTheDocument();
+    expect(screen.getByText('drive.owner@example.com')).toBeInTheDocument();
   });
 
-  it('shows errors with retry, and a reconnect path when the account needs it', async () => {
-    const mock = await openFiles((m) => m.storage.listFiles.mockResolvedValue({ ok: false, error: 'provider-unavailable' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Google Drive could not be reached/);
-    mock.storage.listFiles.mockResolvedValue({ ok: false, error: 'needs-reconnect' });
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Reconnect in Cloud Accounts' }));
+  it('a needs-reconnect account shows the reconnect path without calling the provider', async () => {
+    const mock = await openFiles(() => undefined, [{ ...BOX, status: 'NEEDS_RECONNECT' }]);
+    await openAccount('Dropbox — box.owner@example.com');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/needs to be connected again/);
+    expect(mock.storage.listFiles).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect in Cloud Accounts' }));
     expect(await screen.findByRole('heading', { name: 'Cloud Accounts' })).toBeInTheDocument();
   });
 
-  it('refresh re-fetches the current folder', async () => {
-    const mock = await openFiles((m) => m.storage.listFiles.mockResolvedValue(page([file('a', 'a.pdf')])));
-    await screen.findByText('a.pdf');
-    const calls = mock.storage.listFiles.mock.calls.length;
-    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(mock.storage.listFiles.mock.calls.length).toBe(calls + 1));
+  it('shows empty, permission, network and expired-listing states', async () => {
+    const mock = await openFiles((m) => m.storage.listFiles.mockResolvedValue(page([])));
+    await openAccount('Dropbox — box.owner@example.com');
+    expect(await screen.findByText('This folder is empty.')).toBeInTheDocument();
+
+    for (const [error, text] of [
+      ['permission-denied', /denied access/],
+      ['backend-unreachable', /backend could not be reached/],
+      ['continuation-expired', /listing expired/]
+    ] as const) {
+      mock.storage.listFiles.mockResolvedValue({ ok: false, error });
+      await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(text);
+    }
   });
 
-  it('switching accounts starts again at that account’s root', async () => {
-    const mock = await openFiles((m) => {
-      m.storage.listAccounts.mockResolvedValue({ ok: true, value: [ACCOUNT, SECOND] });
-      m.storage.listFiles.mockImplementation(({ accountId, parentId }) =>
-        Promise.resolve(
-          accountId === SECOND.id ? page([file('w', 'work.pdf')]) : parentId ? page([]) : page([folder('fA', 'Projects')])
-        )
-      );
-    });
-    await userEvent.click(await screen.findByRole('button', { name: 'Open folder Projects' }));
-    await screen.findByText('This folder is empty.');
-    await userEvent.selectOptions(screen.getByLabelText('Account'), SECOND.id);
-    expect(await screen.findByText('work.pdf')).toBeInTheDocument();
-    expect(mock.storage.listFiles).toHaveBeenLastCalledWith({ accountId: SECOND.id, parentId: null });
-    expect(screen.getByRole('navigation', { name: 'Folder path' })).not.toHaveTextContent('Projects');
+  it('explains that opening files, documents and links is not implemented', async () => {
+    await openFiles((m) =>
+      m.storage.listFiles.mockResolvedValue(
+        page([file('id:f1', 'report.pdf', { mimeType: null }), file('id:l', 'Link', { kind: 'SHORTCUT', mimeType: null, sizeBytes: null })])
+      )
+    );
+    await openAccount('Dropbox — box.owner@example.com');
+    await userEvent.click(await screen.findByRole('button', { name: 'report.pdf (PDF file)' }));
+    expect(screen.getByText(/Opening “report.pdf” isn’t implemented yet/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Link (Link)' }));
+    expect(screen.getByText(/Following shortcuts and links isn’t implemented yet/)).toBeInTheDocument();
   });
 
   it('without accounts, points to Cloud Accounts', async () => {
-    await openFiles((m) => m.storage.listAccounts.mockResolvedValue({ ok: true, value: [] }));
+    await openFiles(() => undefined, []);
     await userEvent.click(await screen.findByRole('button', { name: 'Go to Cloud Accounts' }));
     expect(await screen.findByRole('heading', { name: 'Cloud Accounts' })).toBeInTheDocument();
   });

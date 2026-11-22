@@ -4,14 +4,17 @@ import type {
   ConnectionStatus,
   FilePage,
   ListFilesRequest,
+  ProviderAvailability,
   StorageError,
   StorageFile,
+  StorageProvider,
   StorageResult
 } from '../../shared/storage';
 import { SessionExpiredError } from '../auth/auth-manager';
 import {
   ApiError,
   BackendUnreachableError,
+  PROVIDER_SEGMENT,
   RequestAbortedError,
   type BackendApi
 } from '../auth/backend-api';
@@ -42,13 +45,18 @@ export class StorageManager {
     return this.run((api, token) => api.listAccounts(token));
   }
 
-  async beginGoogleConnection(): Promise<StorageResult<ConnectionStarted>> {
+  listProviders(): Promise<StorageResult<readonly ProviderAvailability[]>> {
+    return this.run((api, token) => api.listProviders(token));
+  }
+
+  async beginConnection(provider: StorageProvider): Promise<StorageResult<ConnectionStarted>> {
     const api = this.deps.api;
     if (!api) return { ok: false, error: 'backend-unreachable' };
-    const created = await this.run((a, token) => a.createStorageTransaction(token));
+    const created = await this.run((a, token) => a.createStorageTransaction(token, provider));
     if (!created.ok) return created;
     const { transactionId, authorizationUrl, expiresAt } = created.value;
-    if (!isTrustedStorageAuthorizeUrl(authorizationUrl, api.origin)) {
+    // The browser may only go to this backend's authorize endpoint for the provider that was asked for.
+    if (!isTrustedStorageAuthorizeUrl(authorizationUrl, api.origin, provider)) {
       return { ok: false, error: 'unknown' };
     }
     this.remember(transactionId);
@@ -73,7 +81,7 @@ export class StorageManager {
 
   listFiles(request: ListFilesRequest): Promise<StorageResult<FilePage>> {
     return this.tracked(request.accountId, (api, token, signal) =>
-      api.listFiles(token, request.accountId, request.parentId ?? null, request.pageToken ?? null, signal)
+      api.listFiles(token, request.accountId, request.directory ?? null, request.continuation ?? null, signal)
     );
   }
 
@@ -137,6 +145,8 @@ export function storageError(error: unknown): StorageError {
   if (error instanceof BackendUnreachableError) return 'backend-unreachable';
   if (error instanceof ApiError) {
     if (error.code === 'account_needs_reconnect') return 'needs-reconnect';
+    if (error.code === 'continuation_expired') return 'continuation-expired';
+    if (error.code === 'provider_not_configured') return 'not-configured';
     if (error.code === 'provider_permission_denied') return 'permission-denied';
     switch (error.status) {
       case 400:
@@ -159,7 +169,11 @@ export function storageError(error: unknown): StorageError {
 }
 
 /** The browser may only be sent to the configured backend's own storage authorize endpoint. */
-export function isTrustedStorageAuthorizeUrl(candidate: string, backendOrigin: string): boolean {
+export function isTrustedStorageAuthorizeUrl(
+  candidate: string,
+  backendOrigin: string,
+  provider: StorageProvider
+): boolean {
   let url: URL;
   try {
     url = new URL(candidate);
@@ -171,7 +185,8 @@ export function isTrustedStorageAuthorizeUrl(candidate: string, backendOrigin: s
     url.origin === backendOrigin &&
     url.username === '' &&
     url.password === '' &&
-    /^\/api\/v1\/storage-connections\/google\/authorize\/hds_[A-Za-z0-9_-]{43}$/.test(url.pathname) &&
+    url.pathname.startsWith(`/api/v1/storage-connections/${PROVIDER_SEGMENT[provider]}/authorize/`) &&
+    /^\/api\/v1\/storage-connections\/(google|dropbox)\/authorize\/hds_[A-Za-z0-9_-]{43}$/.test(url.pathname) &&
     url.search === '' &&
     url.hash === ''
   );

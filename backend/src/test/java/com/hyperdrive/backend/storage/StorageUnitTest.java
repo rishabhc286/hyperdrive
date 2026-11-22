@@ -128,9 +128,15 @@ class StorageUnitTest {
     }
 
     private static StorageProperties storage(int defaultPage, int maxPage) {
+        return storage(defaultPage, maxPage, "", "");
+    }
+
+    static StorageProperties storage(int defaultPage, int maxPage, String dropboxKey, String dropboxSecret) {
         return new StorageProperties(KEY_1, 1, "", Duration.ofMinutes(10), Duration.ofMinutes(2),
                 URI.create("https://www.googleapis.com/drive/v3"), Duration.ofSeconds(5), Duration.ofSeconds(15),
-                defaultPage, maxPage, 2, Duration.ofMillis(250), Duration.ofSeconds(4));
+                defaultPage, maxPage, 2, Duration.ofMillis(250), Duration.ofSeconds(4),
+                new StorageProperties.Dropbox(dropboxKey, dropboxSecret, URI.create("https://www.dropbox.com/oauth2/authorize"),
+                        URI.create("https://api.dropboxapi.com/oauth2/token"), URI.create("https://api.dropboxapi.com/2")));
     }
 
     private static ClientRegistration drive(String clientId, String redirect, String... scopes) {
@@ -169,6 +175,9 @@ class StorageUnitTest {
                 .hasMessageContaining("exactly");
         assertThatThrownBy(() -> StorageStartupCheck.validate(auth(), storage(300, 200), drive("id", CALLBACK, SCOPES)))
                 .hasMessageContaining("page sizes");
+        assertThatThrownBy(() -> StorageStartupCheck.validate(auth(), storage(100, 200, "key-only", ""), drive("id", CALLBACK, SCOPES)))
+                .hasMessageContaining("partially configured");
+        StorageStartupCheck.validate(auth(), storage(100, 200, "key", "secret"), drive("id", CALLBACK, SCOPES));
     }
 
     // --- Drive adapter ----------------------------------------------------------------------

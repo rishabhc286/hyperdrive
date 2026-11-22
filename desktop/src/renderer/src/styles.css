@@ -577,3 +577,11 @@ p {
     display: none;
   }
 }
+
+/* ---- Providers (Batch 4) ---- */
+
+.provider-icon {
+  vertical-align: -0.3em;
+  margin-right: 0.25rem;
+  flex: none;
+}

@@ -1,5 +1,163 @@
 # Progress
 
+## Batch 4: Dropbox connection, read-only Dropbox browsing, unified storage view (2026-11-22)
+
+### Foundation check before starting
+
+- **Batch 3 re-verified unchanged:** commit `c43b02f`, `mvnw verify` gave 176 tests, 0 skipped;
+  `npm run check` passed with 156 tests.
+- **Prerequisites:** sign-in, onboarding, Google Drive connection and browsing are all present,
+  so none was missing.
+- **Dropbox docs:** read on 2026-11-22 (OAuth guide, endpoint reference, team-files and developer
+  guides). Points they left unclear and that HyperDrive therefore doesn't rely on:
+  - PKCE together with a client secret.
+  - OIDC scopes.
+  - Whether `list_folder` accepts `id:` paths.
+
+### Completed
+
+- **Dropbox consent flow:**
+  - `POST /api/v1/storage-connections/dropbox/transactions`, with its own callback.
+  - Scopes `account_info.read files.metadata.read` and `token_access_type=offline`. No PKCE: it's
+    explicitly stripped, and a test checks that.
+  - HTTP Basic client authentication.
+  - Identity comes from `users/get_current_account`, and `account_id` must equal the token
+    response's.
+  - The root is `root_info.root_namespace_id`, with `user` and `team` supported. Reconnecting
+    updates the existing row.
+- **Optional provider:** without `DROPBOX_APP_KEY`/`SECRET` the backend still starts and
+  `GET /api/v1/storage-connections/providers` reports Dropbox as unavailable. A partial
+  configuration fails startup.
+- **Dropbox adapter** (raw HTTP, documented fields only):
+  - `list_folder` and `list_folder/continue` stay separate calls; `get_metadata` by `id:`.
+  - Every files call pins `Dropbox-API-Path-Root` to the account's root namespace.
+  - Errors are classified: 401 auth vs. `missing_scope`, 403, 409 `not_found`/`reset`, 422 root,
+    429 with Retry-After, 5xx. Provider text is never echoed.
+- **Provider abstraction refactor:**
+  - `StorageOAuth` (shared Spring Security OAuth plumbing) with `GoogleStorageOAuth` extending it.
+  - One `ConnectionCompleter` per provider.
+  - `ProviderHttp` for shared retries; `FileBrowser` takes an `AccountRoot`.
+  - `ProviderFile` gains `directoryLocator`, `providerRevision`, `contentHash` and
+    `contentHashAlgorithm`; `ProviderIdentity` is shared.
+  - The credential store refreshes with each provider's own OAuth client.
+- **Continuations:** provider cursors are wrapped into AES-GCM continuations bound to account,
+  provider and directory (`ContinuationCodec`). The listing API now uses
+  `?directory=&continuation=` and returns `{ items, continuation }`.
+- **Desktop:**
+  - `beginConnection({ provider })` and `listProviders()`. The authorize URL must match the
+    requested provider. Validated IPC accepts provider-specific locators.
+  - Cloud Accounts: Google Drive and Dropbox connect actions with locally drawn icons, "not
+    configured" state, per-provider failure messages, reconnect and duplicate handling,
+    "(team space)" label, and a per-provider disconnect confirmation with revoke hints.
+  - Files:
+    - The **All storage** virtual root lists accounts; it's never sent to a provider.
+    - Location selector, breadcrumbs from All storage, one table for both providers, a Cache
+      column reading "Not cached", and "Virtual drive not implemented yet".
+    - Pagination state is keyed per account and folder.
+    - Stale responses are dropped, and a disconnected account falls back to All storage.
+- **Database:** Flyway `V3__dropbox.sql`:
+  - Allows the `DROPBOX` provider, and adds typed `root_namespace_id` and `root_type` columns.
+  - Each provider must have its own kind of root.
+  - The PKCE verifier is now required only for Google attempts.
+- **Docs:**
+  - New: [dropbox.md](dropbox.md).
+  - Provider support matrix in [architecture.md](architecture.md#provider-support-matrix).
+  - Updated: README, development, security, google-drive (API parameter rename),
+    authentication pointer and `.env.example`.
+
+### Foundation changes (separate from new features)
+
+- **API rename (breaking for old desktop builds):** the listing API changed from
+  `parentId`/`pageToken` → `{items, nextPageToken}` to `directory`/`continuation` →
+  `{items, continuation}`. Drive's `nextPageToken` is now wrapped like Dropbox's cursor. The
+  desktop was updated in the same batch.
+- **New DTO fields:** the account DTO gained `rootType` and the transaction status gained
+  `provider`. The exact-fields test was updated.
+- **Shared transport:** the Drive adapter moved onto the shared `ProviderHttp` (behavior
+  unchanged; all Drive tests pass).
+- **Updated tests:** the migration test now expects V1–V3. The old "Connect Dropbox stays
+  disabled" test was replaced, because Dropbox is now available.
+- **Wording:** the Overview text changed to "Virtual drive not implemented yet".
+
+### Defects found during this batch and fixed
+
+- **Unwanted PKCE:** Spring Security 7's authorization-request resolver added PKCE to the
+  Dropbox request even though none was configured. The authorization-parameter test caught it,
+  and it's now stripped explicitly.
+- **Weak stale-response test:** the renderer test passed even with the sequence guard removed,
+  because the listing key also hid stale data. Without the guard, a late response blanks the
+  current listing. The test now also asserts the current listing survives, and the mutation is
+  caught.
+- **Non-deterministic header:** the `Dropbox-API-Path-Root` JSON was built with `Map.of`, whose key
+  order varies between JVM runs. A later full run showed it (the JSON meant the same thing). It
+  now uses a fixed order matching Dropbox's documented form.
+
+### Checks executed (Windows 11, Docker 29.7.2, JDK 25.0.5, Node 24.19.0)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Backend unit + integration tests | `.\mvnw.cmd verify` | **Passed**: 211 tests, 0 failures, **0 skipped** (PostgreSQL 18 via Testcontainers; fake Google + fake Dropbox) |
+| Google regression (sign-in, onboarding, sessions, Drive connect/browse) | included above | **Passed**, all Batch 2/3 suites unchanged in behavior |
+| Desktop type check / lint | `npm run typecheck`, `npm run lint` | **Passed** |
+| Desktop tests | `npm test` | **Passed**: 167 tests in 12 files |
+| Desktop build | `npm run build` | **Passed**; no token-format strings in the renderer bundle |
+| Migration on Compose PostgreSQL 18 | Backend start with `auth` profile | **Passed**: V3 applied (history 1, 2, 3) |
+| Partial Dropbox config | Start with only `DROPBOX_APP_KEY` | **Fails fast**: "Dropbox is partially configured…" |
+| Real Dropbox authorize URL | Running backend, placeholder app key, temporary local user (deleted afterwards) | **Passed** (details below) |
+| Logs | grep test and manual-run logs for tokens, tickets, emails, file names, the app secret | **None found** |
+
+Real Dropbox authorize URL check:
+- **Providers endpoint:** reported both providers as available.
+- **Transaction:** create returned **201** with `no-store`.
+- **Redirect:** the ticket URL redirected (302) to `https://www.dropbox.com/oauth2/authorize` with
+  exactly `response_type=code`, `client_id`, `scope=account_info.read files.metadata.read`,
+  `state`, the Dropbox callback as `redirect_uri`, and `token_access_type=offline`. There was no
+  PKCE and no nonce.
+- **Cookie:** path `/api/v1/storage-connections/dropbox`, `HttpOnly; SameSite=Lax`.
+- **Rejected as intended:** reusing the ticket (400), a forged callback (400) and an
+  unauthenticated create (401).
+
+Mutation checks confirm the tests can fail; each mutation was reverted:
+- Continuation not bound to the account.
+- Dropbox `account_id` check removed.
+- `Dropbox-API-Path-Root` header dropped.
+- Callback not bound to its provider.
+- Ownership filter removed.
+- Renderer stale-response guard removed, caught after the test was strengthened.
+
+### Requires manual verification (not executed)
+
+- **Live Dropbox:** no Dropbox app credentials were available. This covers consent, real
+  listings and pagination, Paper/cloud docs, refresh after expiry, revocation in Dropbox, a
+  second account, and a team-space account. Follow the
+  [Dropbox manual verification](dropbox.md#manual-verification-requires-a-dropbox-app).
+- **Live Google:** still pending from Batches 2–3 (no OAuth client).
+- **Electron window:** the new Files and Cloud Accounts pages were not viewed in a real Electron
+  window; they're covered by jsdom tests only.
+
+### Known limitations
+
+- **Revocation:** Dropbox revocation (`auth/token/revoke`) is not called on disconnect;
+  disconnect removes local credentials only.
+- **Team spaces:** handled per the docs (path root header) but untested on a real Business
+  account. Admin and team-token features are unsupported.
+- **Second Dropbox account:** needs signing out of Dropbox in the browser first (no account
+  chooser parameter is used).
+- **Content scope deferred:** `files.content.read` isn't requested yet, so streaming will
+  require a reconnect.
+- **App status:** Dropbox development mode (your account only, or up to 500 enabled users),
+  with no production approval.
+- **Still not implemented:** downloads, streaming, caching, writes, mounting and OneDrive.
+
+### Suggested prerequisites for the next batch
+
+- **Live checks:** run both providers' manual checklists with real credentials first; the next
+  batch builds on real provider behavior.
+- **Credential location:** decide where provider credentials live once the local agent streams
+  content. They're backend-only today.
+- **Content scopes:** plan incremental consent — `files.content.read` for Dropbox (Drive's
+  `drive.readonly` already covers content).
+
 ## Batch 3: Google Drive connection, encrypted credentials, read-only browsing (2026-11-22)
 
 ### Foundation check before starting

@@ -44,12 +44,17 @@ public class StorageStartupCheck implements InitializingBean {
             throw new IllegalStateException("Google Drive connections are not configured: set GOOGLE_CLIENT_ID and "
                     + "GOOGLE_CLIENT_SECRET (or GOOGLE_DRIVE_CLIENT_ID and GOOGLE_DRIVE_CLIENT_SECRET)");
         }
-        String expectedRedirect = auth.publicBaseUrl().toString().replaceAll("/$", "") + StorageBrowserController.CALLBACK_PATH;
+        String expectedRedirect = auth.publicBaseUrl().toString().replaceAll("/$", "")
+                + StorageBrowserController.callbackPath(StorageProvider.GOOGLE_DRIVE);
         if (!expectedRedirect.equals(drive.getRedirectUri())) {
             throw new IllegalStateException("Google Drive redirect URI must be " + expectedRedirect);
         }
         if (!EXPECTED_SCOPES.equals(drive.getScopes())) {
             throw new IllegalStateException("Google Drive connections must request exactly " + EXPECTED_SCOPES);
+        }
+        if (storage.dropbox().partiallyConfigured()) {
+            throw new IllegalStateException("Dropbox is partially configured: set both DROPBOX_APP_KEY and "
+                    + "DROPBOX_APP_SECRET, or neither (Dropbox connections are then disabled)");
         }
         if (storage.maxPageSize() < 1 || storage.maxPageSize() > 1000 || storage.defaultPageSize() < 1
                 || storage.defaultPageSize() > storage.maxPageSize()) {

@@ -131,11 +131,9 @@ describe('cloud account connection buttons', () => {
     expect(screen.getByText(/separate from signing in to HyperDrive/)).toBeInTheDocument();
   });
 
-  it('"Connect Dropbox" stays disabled and explains why', async () => {
+  it('"Connect Dropbox" is available (Batch 4)', async () => {
     await renderSignedIn();
     await userEvent.click(screen.getByRole('button', { name: 'Cloud Accounts' }));
-    const button = screen.getByRole('button', { name: 'Connect Dropbox' });
-    expect(button).toBeDisabled();
-    expect(button).toHaveAccessibleDescription(/later development batch/);
+    expect(await screen.findByRole('button', { name: 'Connect Dropbox' })).toBeEnabled();
   });
 });

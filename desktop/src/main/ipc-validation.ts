@@ -1,5 +1,13 @@
 /** Validation of renderer-supplied IPC payloads. Anything unexpected is rejected. */
-import { isValidPageToken, PROVIDER_FILE_ID, UUID, type ListFilesRequest } from '../shared/storage';
+import {
+  isStorageProvider,
+  isValidContinuation,
+  isValidDirectory,
+  PROVIDER_FILE_ID,
+  UUID,
+  type ListFilesRequest,
+  type StorageProvider
+} from '../shared/storage';
 
 export class InvalidIpcPayloadError extends Error {
   constructor(channel: string) {
@@ -55,19 +63,33 @@ export function parseAccountPayload(channel: string, args: unknown[]): { account
   return { accountId: uuidField(channel, singleObject(channel, args, ['accountId']), 'accountId') };
 }
 
-/** `[{ accountId: uuid, parentId?: id | null, pageToken?: cursor | null }]`. */
+/** Exactly `[{ provider: 'GOOGLE_DRIVE' | 'DROPBOX' }]`. */
+export function parseBeginConnectionPayload(channel: string, args: unknown[]): { provider: StorageProvider } {
+  const provider = singleObject(channel, args, ['provider'])['provider'];
+  if (!isStorageProvider(provider)) throw new InvalidIpcPayloadError(channel);
+  return { provider };
+}
+
+/**
+ * `[{ accountId: uuid, directory?: locator | null, continuation?: token | null }]`. Locators are
+ * provider-specific (Drive id or Dropbox path); the backend validates them per provider.
+ */
 export function parseListFilesPayload(channel: string, args: unknown[]): ListFilesRequest {
-  const payload = singleObject(channel, args, ['accountId', 'parentId', 'pageToken']);
+  const payload = singleObject(channel, args, ['accountId', 'directory', 'continuation']);
   const accountId = uuidField(channel, payload, 'accountId');
-  const parentId = payload['parentId'];
-  const pageToken = payload['pageToken'];
-  if (parentId !== undefined && parentId !== null && (typeof parentId !== 'string' || !PROVIDER_FILE_ID.test(parentId))) {
+  const directory = payload['directory'];
+  const continuation = payload['continuation'];
+  if (directory !== undefined && directory !== null && (typeof directory !== 'string' || !isValidDirectory(directory))) {
     throw new InvalidIpcPayloadError(channel);
   }
-  if (pageToken !== undefined && pageToken !== null && (typeof pageToken !== 'string' || !isValidPageToken(pageToken))) {
+  if (
+    continuation !== undefined &&
+    continuation !== null &&
+    (typeof continuation !== 'string' || !isValidContinuation(continuation))
+  ) {
     throw new InvalidIpcPayloadError(channel);
   }
-  return { accountId, parentId: parentId ?? null, pageToken: pageToken ?? null };
+  return { accountId, directory: directory ?? null, continuation: continuation ?? null };
 }
 
 /** Exactly `[{ accountId: uuid, fileId: id }]`. */

@@ -3,7 +3,7 @@ package com.hyperdrive.backend.storage.account;
 import com.hyperdrive.backend.auth.session.SessionPrincipal;
 import com.hyperdrive.backend.config.ConditionalOnAuthEnabled;
 import com.hyperdrive.backend.storage.files.StorageFilesService;
-import com.hyperdrive.backend.storage.provider.FilePage;
+import com.hyperdrive.backend.storage.files.FileListing;
 import com.hyperdrive.backend.storage.provider.ProviderFile;
 import com.hyperdrive.backend.web.ApiException;
 import java.util.List;
@@ -65,15 +65,19 @@ public class ConnectedAccountController {
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
 
-    /** Direct children of {@code parentId} (the account's root folder when omitted). */
+    /**
+     * Direct children of {@code directory} (a folder's {@code directoryLocator}; the account root when
+     * omitted). {@code continuation} is the opaque value from the previous page of the same listing.
+     */
     @GetMapping("/{accountId}/files")
-    public ResponseEntity<FilePage> listFiles(@AuthenticationPrincipal SessionPrincipal principal,
-            @PathVariable UUID accountId, @RequestParam(required = false) String parentId,
-            @RequestParam(required = false) String pageToken, @RequestParam(required = false) Integer pageSize) {
+    public ResponseEntity<FileListing> listFiles(@AuthenticationPrincipal SessionPrincipal principal,
+            @PathVariable UUID accountId, @RequestParam(required = false) String directory,
+            @RequestParam(required = false) String continuation, @RequestParam(required = false) Integer pageSize) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(files.list(principal.userId(), accountId, parentId, pageToken, pageSize));
+                .body(files.list(principal.userId(), accountId, directory, continuation, pageSize));
     }
 
+    /** Metadata by stable provider id (Dropbox ids look like {@code id:...}; URL-encode the segment). */
     @GetMapping("/{accountId}/files/{fileId}")
     public ResponseEntity<ProviderFile> getFile(@AuthenticationPrincipal SessionPrincipal principal,
             @PathVariable UUID accountId, @PathVariable String fileId) {

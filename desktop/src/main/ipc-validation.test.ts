@@ -5,6 +5,7 @@ import {
   expectNoArgs,
   InvalidIpcPayloadError,
   parseAccountPayload,
+  parseBeginConnectionPayload,
   parseFileMetadataPayload,
   parseListFilesPayload,
   parseOnboardingPayload,
@@ -48,12 +49,18 @@ describe('storage IPC payload validation', () => {
   it('accepts well-formed payloads', () => {
     expect(parseTransactionPayload('c', [{ transactionId: ACCOUNT }])).toEqual({ transactionId: ACCOUNT });
     expect(parseAccountPayload('c', [{ accountId: ACCOUNT }])).toEqual({ accountId: ACCOUNT });
-    expect(parseListFilesPayload('c', [{ accountId: ACCOUNT }])).toEqual({ accountId: ACCOUNT, parentId: null, pageToken: null });
-    expect(parseListFilesPayload('c', [{ accountId: ACCOUNT, parentId: 'abc_-1', pageToken: 'p~2' }])).toEqual({
+    expect(parseListFilesPayload('c', [{ accountId: ACCOUNT }])).toEqual({ accountId: ACCOUNT, directory: null, continuation: null });
+    expect(parseListFilesPayload('c', [{ accountId: ACCOUNT, directory: 'abc_-1', continuation: 'hdk_p2' }])).toEqual({
       accountId: ACCOUNT,
-      parentId: 'abc_-1',
-      pageToken: 'p~2'
+      directory: 'abc_-1',
+      continuation: 'hdk_p2'
     });
+    // Dropbox directories are paths; the backend validates per provider.
+    expect(parseListFilesPayload('c', [{ accountId: ACCOUNT, directory: '/photos/2024 trip' }]).directory).toBe(
+      '/photos/2024 trip'
+    );
+    expect(parseBeginConnectionPayload('c', [{ provider: 'DROPBOX' }])).toEqual({ provider: 'DROPBOX' });
+    expect(parseBeginConnectionPayload('c', [{ provider: 'GOOGLE_DRIVE' }])).toEqual({ provider: 'GOOGLE_DRIVE' });
     expect(parseFileMetadataPayload('c', [{ accountId: ACCOUNT, fileId: 'f1' }])).toEqual({ accountId: ACCOUNT, fileId: 'f1' });
   });
 
@@ -62,13 +69,22 @@ describe('storage IPC payload validation', () => {
     ['a non-uuid account', [{ accountId: '../etc' }]],
     ['an uppercase/invalid uuid', [{ accountId: 'not-a-uuid' }]],
     ['an extra owner field', [{ accountId: ACCOUNT, userId: 'someone-else' }]],
-    ['a quote in parentId', [{ accountId: ACCOUNT, parentId: "a' or 1=1" }]],
-    ['a path in parentId', [{ accountId: ACCOUNT, parentId: 'a/b' }]],
-    ['a pageToken with spaces', [{ accountId: ACCOUNT, pageToken: 'a b' }]],
-    ['an oversized pageToken', [{ accountId: ACCOUNT, pageToken: 'x'.repeat(2049) }]],
+    ['a control character in directory', [{ accountId: ACCOUNT, directory: '/a\nb' }]],
+    ['an empty directory', [{ accountId: ACCOUNT, directory: '' }]],
+    ['an oversized directory', [{ accountId: ACCOUNT, directory: '/' + 'x'.repeat(4096) }]],
+    ['a non-string directory', [{ accountId: ACCOUNT, directory: 42 }]],
+    ['a continuation with spaces', [{ accountId: ACCOUNT, continuation: 'a b' }]],
+    ['an oversized continuation', [{ accountId: ACCOUNT, continuation: 'x'.repeat(8193) }]],
+    ['the old parentId key', [{ accountId: ACCOUNT, parentId: 'abc' }]],
     ['a URL', [{ accountId: ACCOUNT, url: 'https://evil.example' }]]
   ])('rejects %s for listFiles', (_label, args) => {
     expect(() => parseListFilesPayload('c', args as unknown[])).toThrow(InvalidIpcPayloadError);
+  });
+
+  it('rejects unknown providers', () => {
+    for (const bad of [[{ provider: 'ONEDRIVE' }], [{ provider: 'dropbox' }], [{}], [{ provider: 'DROPBOX', url: 'x' }], []]) {
+      expect(() => parseBeginConnectionPayload('c', bad as unknown[])).toThrow(InvalidIpcPayloadError);
+    }
   });
 
   it('rejects malformed transaction, account and file payloads', () => {

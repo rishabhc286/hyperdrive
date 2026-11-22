@@ -17,6 +17,7 @@ See the [README](../README.md) for setup and run commands. This page covers deta
 | `HYPERDRIVE_CREDENTIAL_KEY` | Backend (auth) | Process environment | **required**: base64 of 32 random bytes (encrypts Google Drive tokens) |
 | `HYPERDRIVE_CREDENTIAL_KEY_VERSION`, `HYPERDRIVE_CREDENTIAL_PREVIOUS_KEYS` | Backend (auth) | Process environment | `1`, empty (key rotation) |
 | `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` | Backend (auth) | Process environment | Fall back to `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` |
+| `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET` | Backend (auth) | Process environment | empty = Dropbox disabled; only one set = startup fails |
 | `HYPERDRIVE_BACKEND_URL` | Desktop **main process** only | Process environment (`process.env`) | `http://127.0.0.1:18080` |
 
 Neither the backend nor the desktop loads `.env`. Set variables in the PowerShell session that
@@ -88,8 +89,10 @@ Packaging (installer, code signing) is not set up yet.
     storage/         StorageConfig (clients, timeouts), StorageStartupCheck
     storage/connect/ Drive consent: transactions, browser leg + callback, Spring OAuth glue
     storage/account/ connected accounts, encrypted credentials + serialized refresh, accounts/files API
-    storage/files/   browsing orchestration (ownership → credentials → provider, error mapping)
-    storage/provider/  FileBrowser abstraction + ProviderFile DTO; google/ = Drive v3 adapter
+    storage/files/   browsing orchestration (ownership → credentials → provider, error mapping),
+                     ContinuationCodec (encrypted, account-bound continuations)
+    storage/provider/  FileBrowser abstraction, ProviderFile DTO, ProviderHttp (shared retries);
+                     google/ = Drive v3 adapter, dropbox/ = Dropbox API v2 adapter
     storage/crypto/  AES-256-GCM CredentialCipher
   ```
 - **Database access:** plain `JdbcClient` with explicit SQL. Every single-use or rotating state
@@ -110,6 +113,10 @@ Packaging (installer, code signing) is not set up yet.
   For Batch 3 the same fake also serves the refresh-token grant and a small Drive v3 (`files.list`
   children queries, `files.get`), with error injection (401/403 reasons/429 + Retry-After/5xx).
   Storage tests use a fixed test-only credential key that exists only in test code.
+  For Batch 4, `FakeDropbox` (JDK HttpServer) serves `/oauth2/token` (with Basic client auth
+  checked), `users/get_current_account`, `files/list_folder`, `list_folder/continue` and
+  `get_metadata`. It answers files calls only for the namespace in `Dropbox-API-Path-Root`, and
+  supports error injection.
 - **Without Docker:** the integration classes are **skipped** (`disabledWithoutDocker`). Maven
   reports them as skipped, never as passed.
 

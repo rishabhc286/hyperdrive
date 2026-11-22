@@ -11,6 +11,9 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
@@ -53,6 +56,8 @@ public class StorageConnectionService {
             Instant expiresAt, UUID accountId, Boolean reconnected, String errorCode) {
     }
 
+    private static final Logger log = LoggerFactory.getLogger(StorageConnectionService.class);
+
     private final JdbcClient jdbc;
     private final Clock clock;
     private final StorageProperties properties;
@@ -93,8 +98,9 @@ public class StorageConnectionService {
     }
 
     /**
-     * Consumes the one-time ticket and binds the OAuth state, nonce, PKCE verifier (encrypted) and
-     * browser cookie to the transaction. Empty if the ticket is unknown, used, expired or cancelled.
+     * Consumes the one-time ticket and binds the OAuth state, nonce and PKCE verifier (encrypted;
+     * both null for providers that use neither) and the browser cookie to the transaction. Empty if
+     * the ticket is unknown, used, expired, cancelled, or belongs to another provider.
      */
     public Optional<UUID> startBrowser(StorageProvider provider, String ticket, String state, String nonceHash,
             String codeVerifier, String browserBinding) {
@@ -111,7 +117,7 @@ public class StorageConnectionService {
         if (id.isEmpty()) {
             return Optional.empty();
         }
-        CredentialCipher.Sealed verifier = cipher.encrypt(codeVerifier, verifierContext(id.get()));
+        CredentialCipher.Sealed verifier = codeVerifier == null ? null : cipher.encrypt(codeVerifier, verifierContext(id.get()));
         int updated = jdbc.sql("""
                 UPDATE storage_connection_transactions
                 SET status = 'AUTHORIZING', browser_started_at = :now, oauth_state_hash = :stateHash,
@@ -124,8 +130,8 @@ public class StorageConnectionService {
                 .param("stateHash", SecureTokens.hash(state))
                 .param("bindingHash", SecureTokens.hash(browserBinding))
                 .param("nonce", nonceHash)
-                .param("verifier", verifier.value())
-                .param("keyVersion", verifier.keyVersion())
+                .param("verifier", verifier == null ? null : verifier.value())
+                .param("keyVersion", verifier == null ? null : verifier.keyVersion())
                 .param("id", id.get())
                 .param("ticketHash", SecureTokens.hash(ticket))
                 .update();
@@ -149,12 +155,34 @@ public class StorageConnectionService {
                 .query((rs, n) -> new Claimed(rs.getObject("id", UUID.class), rs.getObject("user_id", UUID.class),
                         StorageProvider.valueOf(rs.getString("provider")), rs.getBytes("browser_binding_hash"),
                         rs.getString("oidc_nonce"), rs.getBytes("encrypted_code_verifier"),
-                        rs.getInt("encryption_key_version")))
+                        rs.getObject("encryption_key_version") == null ? 0 : rs.getInt("encryption_key_version")))
                 .optional();
     }
 
+    /** The decrypted PKCE verifier, or null if this attempt used none. */
     public String codeVerifier(Claimed claimed) {
+        if (claimed.encryptedVerifier() == null) {
+            return null;
+        }
         return cipher.decrypt(claimed.encryptedVerifier(), claimed.keyVersion(), verifierContext(claimed.id()));
+    }
+
+    /** Records a failed callback and returns the outcome to render. */
+    public ConnectionOutcome failWith(Claimed claimed, ConnectionOutcome.Failure failure) {
+        fail(claimed.id(), failure.code());
+        return new ConnectionOutcome.Failed(failure);
+    }
+
+    /** Runs the database step that stores a connection; any failure is recorded as internal_error. */
+    public ConnectionOutcome store(Claimed claimed, Supplier<Boolean> step) {
+        try {
+            boolean reconnected = Boolean.TRUE.equals(step.get());
+            log.info("Storage connection {} ({}) completed (reconnect={})", claimed.id(), claimed.provider(), reconnected);
+            return new ConnectionOutcome.Connected(reconnected);
+        } catch (RuntimeException e) {
+            log.error("Storing the connection for transaction {} failed", claimed.id(), e);
+            return failWith(claimed, ConnectionOutcome.Failure.INTERNAL);
+        }
     }
 
     public void complete(UUID id, UUID accountId, boolean reconnected) {

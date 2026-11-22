@@ -1,19 +1,27 @@
 package com.hyperdrive.backend.storage.provider;
 
+import java.util.Arrays;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
-/** Supported storage providers. Dropbox joins in its own batch. */
+/**
+ * Supported storage providers. Each provider has its own syntax for stable file ids and for the
+ * directory locators used to navigate; the two are deliberately distinct (a Dropbox folder is
+ * identified by {@code id:...} but listed by path).
+ */
 public enum StorageProvider {
-    GOOGLE_DRIVE("google", "google-drive", Pattern.compile("^[A-Za-z0-9_-]{1,256}$"));
+    GOOGLE_DRIVE("google", Pattern.compile("^[A-Za-z0-9_-]{1,256}$"), Pattern.compile("^[A-Za-z0-9_-]{1,256}$")),
+    /** File ids are {@code id:...}; directories are addressed by lower-cased path ("/a/b"), root = "". */
+    DROPBOX("dropbox", Pattern.compile("^id:[A-Za-z0-9_-]{1,256}$"), Pattern.compile("^/[^\\p{Cntrl}]{1,4095}$"));
 
     private final String pathSegment;
-    private final String registrationId;
     private final Pattern fileIdFormat;
+    private final Pattern directoryFormat;
 
-    StorageProvider(String pathSegment, String registrationId, Pattern fileIdFormat) {
+    StorageProvider(String pathSegment, Pattern fileIdFormat, Pattern directoryFormat) {
         this.pathSegment = pathSegment;
-        this.registrationId = registrationId;
         this.fileIdFormat = fileIdFormat;
+        this.directoryFormat = directoryFormat;
     }
 
     /** Segment used in {@code /api/v1/storage-connections/{segment}/...}. */
@@ -21,13 +29,22 @@ public enum StorageProvider {
         return pathSegment;
     }
 
-    /** Spring Security client registration used for this provider's storage consent. */
+    /** Spring Security / internal client registration id for this provider's storage consent. */
     public String registrationId() {
-        return registrationId;
+        return this == GOOGLE_DRIVE ? "google-drive" : "dropbox";
     }
 
-    /** Syntactic check of a provider file id before it is sent anywhere. */
+    public static Optional<StorageProvider> fromPathSegment(String segment) {
+        return Arrays.stream(values()).filter(p -> p.pathSegment.equals(segment)).findFirst();
+    }
+
+    /** Syntactic check of a stable provider file id before it is sent anywhere. */
     public boolean isValidFileId(String id) {
         return id != null && fileIdFormat.matcher(id).matches();
+    }
+
+    /** Syntactic check of a directory locator (never the root, which is always "omitted"). */
+    public boolean isValidDirectory(String locator) {
+        return locator != null && directoryFormat.matcher(locator).matches() && !locator.contains("//");
     }
 }

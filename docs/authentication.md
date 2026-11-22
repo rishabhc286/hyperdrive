@@ -1,7 +1,8 @@
 # Authentication
 
-> Connecting Google Drive is a **separate** flow with its own scopes and callback; it never
-> changes the sign-in described here. See [google-drive.md](google-drive.md).
+> Connecting Google Drive or Dropbox is a **separate** flow with its own scopes and callback; it
+> never changes the sign-in described here. See [google-drive.md](google-drive.md) and
+> [dropbox.md](dropbox.md).
 
 HyperDrive accounts are created by signing in with Google. There are no HyperDrive passwords.
 Signing in identifies you and nothing more. **It does not connect Google Drive**: connecting

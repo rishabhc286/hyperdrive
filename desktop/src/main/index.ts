@@ -22,6 +22,7 @@ import { deviceName } from './device-name';
 import {
   expectNoArgs,
   parseAccountPayload,
+  parseBeginConnectionPayload,
   parseFileMetadataPayload,
   parseListFilesPayload,
   parseOnboardingPayload,
@@ -159,9 +160,12 @@ function registerIpc(auth: AuthManager, storage: StorageManager): void {
     expectNoArgs(StorageIpcChannel.listAccounts, args);
     return storage.listAccounts();
   });
-  handleTrusted(StorageIpcChannel.beginGoogleConnection, (args) => {
-    expectNoArgs(StorageIpcChannel.beginGoogleConnection, args);
-    return storage.beginGoogleConnection();
+  handleTrusted(StorageIpcChannel.listProviders, (args) => {
+    expectNoArgs(StorageIpcChannel.listProviders, args);
+    return storage.listProviders();
+  });
+  handleTrusted(StorageIpcChannel.beginConnection, (args) => {
+    return storage.beginConnection(parseBeginConnectionPayload(StorageIpcChannel.beginConnection, args).provider);
   });
   handleTrusted(StorageIpcChannel.getConnectionStatus, (args) => {
     return storage.getConnectionStatus(parseTransactionPayload(StorageIpcChannel.getConnectionStatus, args).transactionId);
@@ -192,7 +196,7 @@ function createStorageManager(api: BackendApi | null, auth: AuthManager): Storag
     withAccessToken: (call) => auth.withAccessToken(call),
     openExternal: async (url) => {
       // Defense in depth: StorageManager already validated this; re-check right before opening.
-      if (!api || !isTrustedStorageAuthorizeUrl(url, api.origin)) {
+      if (!api || !(['GOOGLE_DRIVE', 'DROPBOX'] as const).some((p) => isTrustedStorageAuthorizeUrl(url, api.origin, p))) {
         throw new Error('Refusing to open an untrusted URL');
       }
       await shell.openExternal(url);

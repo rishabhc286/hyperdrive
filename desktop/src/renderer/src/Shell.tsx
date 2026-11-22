@@ -4,7 +4,7 @@ import type { StorageApi } from '../../shared/storage';
 import { BackendIndicator, BrandMark } from './BackendIndicator';
 import { SECTIONS, SectionView, type SectionId } from './sections';
 import type { BackendStatus } from './useBackendHealth';
-import { useConnectedAccounts, useGoogleConnection } from './useStorage';
+import { useConnectedAccounts, useConnection, useProviderAvailability } from './useStorage';
 
 export interface ShellProps {
   readonly user: SafeUser;
@@ -21,7 +21,8 @@ export function Shell({ user, backendStatus, onRecheckBackend, onSignOut, storag
   const [active, setActive] = useState<SectionId>('overview');
   // Owned here so a pending connection keeps polling while the user switches sections.
   const accounts = useConnectedAccounts(storage);
-  const connection = useGoogleConnection(storage, () => void accounts.reload(), pollIntervalMs);
+  const connection = useConnection(storage, () => void accounts.reload(), pollIntervalMs);
+  const availability = useProviderAvailability(storage);
 
   return (
     <div className="shell">
@@ -70,7 +71,8 @@ export function Shell({ user, backendStatus, onRecheckBackend, onSignOut, storag
             accounts={accounts.state}
             onReloadAccounts={() => void accounts.reload()}
             connection={connection.flow}
-            onConnect={() => void connection.start()}
+            availability={availability}
+            onConnect={(provider) => void connection.start(provider)}
             onCancelConnection={() => void connection.cancel()}
             onDismissConnection={connection.dismiss}
           />

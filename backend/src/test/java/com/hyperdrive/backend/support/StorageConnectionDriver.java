@@ -47,7 +47,11 @@ public final class StorageConnectionDriver {
     }
 
     public MvcResult createRaw(String accessToken) throws Exception {
-        MockHttpServletRequestBuilder request = post("/api/v1/storage-connections/google/transactions");
+        return createRaw(accessToken, "google");
+    }
+
+    public MvcResult createRaw(String accessToken, String provider) throws Exception {
+        MockHttpServletRequestBuilder request = post("/api/v1/storage-connections/" + provider + "/transactions");
         if (accessToken != null) {
             request.header("Authorization", "Bearer " + accessToken);
         }
@@ -55,7 +59,11 @@ public final class StorageConnectionDriver {
     }
 
     public Started create(String accessToken) throws Exception {
-        MvcResult result = createRaw(accessToken);
+        return create(accessToken, "google");
+    }
+
+    public Started create(String accessToken, String provider) throws Exception {
+        MvcResult result = createRaw(accessToken, provider);
         assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(201);
         JsonNode json = DesktopLoginDriver.JSON.readTree(result.getResponse().getContentAsString());
         return new Started(UUID.fromString(json.get("transactionId").asString()), json.get("authorizationUrl").asString(), json);
@@ -74,7 +82,11 @@ public final class StorageConnectionDriver {
 
     /** Google redirecting the browser back to the storage callback. */
     public MvcResult callback(Map<String, String> params, Cookie binding) throws Exception {
-        MockHttpServletRequestBuilder request = get("/api/v1/storage-connections/google/callback");
+        return callback("google", params, binding);
+    }
+
+    public MvcResult callback(String provider, Map<String, String> params, Cookie binding) throws Exception {
+        MockHttpServletRequestBuilder request = get("/api/v1/storage-connections/" + provider + "/callback");
         params.forEach(request::queryParam);
         if (binding != null) {
             request.cookie(binding);
@@ -93,6 +105,25 @@ public final class StorageConnectionDriver {
     public UUID connect(String accessToken, Login login) throws Exception {
         Started started = create(accessToken);
         MvcResult callback = consent(open(started), login);
+        assertThat(callback.getResponse().getStatus()).as(callback.getResponse().getContentAsString()).isEqualTo(200);
+        JsonNode status = statusJson(accessToken, started.transactionId());
+        assertThat(status.get("status").asString()).isEqualTo("COMPLETED");
+        return UUID.fromString(status.get("accountId").asString());
+    }
+
+    // --- Dropbox ---------------------------------------------------------------------------
+
+    /** Completes Dropbox consent at the fake as {@code account}; returns the callback result. */
+    public MvcResult dropboxConsent(FakeDropbox fake, AtGoogle atDropbox, FakeDropbox.Account account) throws Exception {
+        String code = "dropbox-code-" + DesktopLoginDriver.random(12);
+        fake.prepare(code, account);
+        return callback("dropbox", Map.of("code", code, "state", atDropbox.params().get("state")), atDropbox.binding());
+    }
+
+    /** Full Dropbox happy path; returns the connected account id. */
+    public UUID connectDropbox(String accessToken, FakeDropbox fake, FakeDropbox.Account account) throws Exception {
+        Started started = create(accessToken, "dropbox");
+        MvcResult callback = dropboxConsent(fake, open(started), account);
         assertThat(callback.getResponse().getStatus()).as(callback.getResponse().getContentAsString()).isEqualTo(200);
         JsonNode status = statusJson(accessToken, started.transactionId());
         assertThat(status.get("status").asString()).isEqualTo("COMPLETED");

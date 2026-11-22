@@ -26,7 +26,8 @@ const auth: AuthApi = {
 // Payloads are rebuilt with only the expected keys; the main process validates them again.
 const storage: StorageApi = {
   listAccounts: () => ipcRenderer.invoke(StorageIpcChannel.listAccounts),
-  beginGoogleConnection: () => ipcRenderer.invoke(StorageIpcChannel.beginGoogleConnection),
+  listProviders: () => ipcRenderer.invoke(StorageIpcChannel.listProviders),
+  beginConnection: (input) => ipcRenderer.invoke(StorageIpcChannel.beginConnection, { provider: String(input.provider) }),
   getConnectionStatus: (input) =>
     ipcRenderer.invoke(StorageIpcChannel.getConnectionStatus, { transactionId: String(input.transactionId) }),
   cancelConnection: (input) =>
@@ -34,8 +35,8 @@ const storage: StorageApi = {
   listFiles: (input) =>
     ipcRenderer.invoke(StorageIpcChannel.listFiles, {
       accountId: String(input.accountId),
-      parentId: input.parentId == null ? null : String(input.parentId),
-      pageToken: input.pageToken == null ? null : String(input.pageToken)
+      directory: input.directory == null ? null : String(input.directory),
+      continuation: input.continuation == null ? null : String(input.continuation)
     }),
   getFileMetadata: (input) =>
     ipcRenderer.invoke(StorageIpcChannel.getFileMetadata, {

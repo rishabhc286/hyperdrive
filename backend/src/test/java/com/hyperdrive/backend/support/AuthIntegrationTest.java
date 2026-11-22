@@ -37,6 +37,7 @@ public abstract class AuthIntegrationTest {
 
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18-alpine");
     protected static FakeOidcProvider google;
+    protected static FakeDropbox dropbox;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -45,6 +46,9 @@ public abstract class AuthIntegrationTest {
         }
         if (google == null) {
             google = new FakeOidcProvider(CLIENT_ID);
+        }
+        if (dropbox == null) {
+            dropbox = new FakeDropbox();
         }
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
@@ -60,6 +64,12 @@ public abstract class AuthIntegrationTest {
         registry.add("hyperdrive.storage.drive-api-base-url", google::driveApiBaseUrl);
         registry.add("hyperdrive.storage.retry-base-delay", () -> "1ms");
         registry.add("hyperdrive.storage.max-retry-delay", () -> "50ms");
+        // Dropbox app pointed at the fake (endpoint overrides exist only for tests).
+        registry.add("DROPBOX_APP_KEY", () -> FakeDropbox.APP_KEY);
+        registry.add("DROPBOX_APP_SECRET", () -> FakeDropbox.APP_SECRET);
+        registry.add("hyperdrive.storage.dropbox.authorization-uri", () -> dropbox.baseUrl() + "/oauth2/authorize");
+        registry.add("hyperdrive.storage.dropbox.token-uri", () -> dropbox.baseUrl() + "/oauth2/token");
+        registry.add("hyperdrive.storage.dropbox.api-base-url", () -> dropbox.baseUrl() + "/2");
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -87,6 +97,7 @@ public abstract class AuthIntegrationTest {
         jdbc.sql("TRUNCATE users, login_transactions CASCADE").update();
         mutableClock().reset();
         google.resetDrive();
+        dropbox.reset();
     }
 
     protected long count(String table) {

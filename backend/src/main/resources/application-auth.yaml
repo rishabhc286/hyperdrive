@@ -60,3 +60,8 @@ hyperdrive:
     credential-key-version: ${HYPERDRIVE_CREDENTIAL_KEY_VERSION:1}
     # Optional, for key rotation: "version:base64,version:base64" (decryption only).
     previous-credential-keys: ${HYPERDRIVE_CREDENTIAL_PREVIOUS_KEYS:}
+    # Optional: Dropbox API app (Full Dropbox access, scopes account_info.read + files.metadata.read).
+    # Leave both empty to disable Dropbox connections. The secret stays on the backend only.
+    dropbox:
+      app-key: ${DROPBOX_APP_KEY:}
+      app-secret: ${DROPBOX_APP_SECRET:}

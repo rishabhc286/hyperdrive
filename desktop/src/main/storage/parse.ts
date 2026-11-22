@@ -5,9 +5,17 @@ import type {
   ConnectionStatus,
   FileKind,
   FilePage,
+  ProviderAvailability,
   StorageFile
 } from '../../shared/storage';
-import { PROVIDER_FILE_ID, UUID } from '../../shared/storage';
+import {
+  isStorageProvider,
+  isValidContinuation,
+  isValidDirectory,
+  PROVIDER_FILE_ID,
+  STORAGE_PROVIDERS,
+  UUID
+} from '../../shared/storage';
 
 /**
  * Strict parsers for backend storage responses. Each copies only known fields, so anything
@@ -56,12 +64,14 @@ export function parseAccount(value: unknown): ConnectedAccount {
   const id = str(v, 'id');
   if (!UUID.test(id)) throw new StorageResponseError();
   const lastErrorCode = optStr(v, 'lastErrorCode', 64);
+  const rootType = v['rootType'];
   return {
     id,
-    provider: oneOf(v['provider'], ['GOOGLE_DRIVE'] as const),
+    provider: oneOf(v['provider'], STORAGE_PROVIDERS),
     displayName: optStr(v, 'displayName', 200),
     email: optStr(v, 'email', 320),
     status: oneOf(v['status'], ACCOUNT_STATUSES),
+    rootType: rootType === null || rootType === undefined ? null : oneOf(rootType, ['USER', 'TEAM'] as const),
     connectedAt: str(v, 'connectedAt'),
     lastSuccessAt: optStr(v, 'lastSuccessAt', 64),
     lastErrorCode: lastErrorCode !== null && ERROR_CODE.test(lastErrorCode) ? lastErrorCode : null
@@ -79,6 +89,7 @@ export function parseFile(value: unknown): StorageFile {
   const canDownload = v['canDownload'];
   if (typeof canDownload !== 'boolean') throw new StorageResponseError();
   const target = optStr(v, 'shortcutTargetId', 256);
+  const locator = optStr(v, 'directoryLocator', 4096);
   return {
     providerFileId,
     name: optStr(v, 'name', 4096) ?? '',
@@ -87,6 +98,10 @@ export function parseFile(value: unknown): StorageFile {
     sizeBytes: typeof size === 'number' ? size : null,
     modifiedAt: optStr(v, 'modifiedAt', 64),
     canDownload,
+    directoryLocator: locator !== null && isValidDirectory(locator) ? locator : null,
+    providerRevision: optStr(v, 'providerRevision', 256),
+    contentHash: optStr(v, 'contentHash', 256),
+    contentHashAlgorithm: optStr(v, 'contentHashAlgorithm', 64),
     shortcutTargetId: target !== null && PROVIDER_FILE_ID.test(target) ? target : null,
     shortcutTargetMimeType: optStr(v, 'shortcutTargetMimeType', 255)
   };
@@ -96,7 +111,18 @@ export function parseFilePage(value: unknown): FilePage {
   const v = object(value);
   const items = v['items'];
   if (!Array.isArray(items)) throw new StorageResponseError();
-  return { items: items.map(parseFile), nextPageToken: optStr(v, 'nextPageToken') };
+  const continuation = optStr(v, 'continuation', 8192);
+  if (continuation !== null && !isValidContinuation(continuation)) throw new StorageResponseError();
+  return { items: items.map(parseFile), continuation };
+}
+
+export function parseProviders(value: unknown): ProviderAvailability[] {
+  const items = object(value)['items'];
+  if (!Array.isArray(items)) throw new StorageResponseError();
+  return items
+    .map((item) => object(item))
+    .filter((item) => isStorageProvider(item['provider']))
+    .map((item) => ({ provider: item['provider'] as ProviderAvailability['provider'], available: item['available'] === true }));
 }
 
 export function parseConnectionStatus(value: unknown): ConnectionStatus {
@@ -111,6 +137,7 @@ export function parseConnectionStatus(value: unknown): ConnectionStatus {
   }
   return {
     transactionId,
+    provider: oneOf(v['provider'], STORAGE_PROVIDERS),
     status: oneOf(v['status'], CONNECTION_STATES),
     browserOpened,
     expiresAt: str(v, 'expiresAt'),

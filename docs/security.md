@@ -14,6 +14,9 @@ What the code does today, and what it deliberately doesn't yet. See
 | Handoff code | Backend: SHA-256 hash, 60 s, single use. Appears once in the loopback redirect URL | Reusable, logged |
 | Google sign-in access/ID tokens | Used transiently by Spring Security during the sign-in callback | Stored or sent to the desktop |
 | Google **Drive** access/refresh tokens | Backend database, AES-256-GCM encrypted (`provider_credentials`) | Plaintext at rest, the desktop, the renderer, URLs, logs |
+| **Dropbox** access/refresh tokens | Same table and encryption as Drive, separate row per connection | Same as above |
+| Dropbox app secret | Backend environment (`DROPBOX_APP_SECRET`) | In desktop code, renderer config, the repo, or logs |
+| Provider listing cursors | Wrapped into AES-GCM continuations bound to account + provider + folder | Returned raw, or accepted for another account |
 | Credential encryption key | Backend environment (`HYPERDRIVE_CREDENTIAL_KEY`) | In the database, the repo, or a hardcoded fallback |
 | Storage ticket / OAuth state / binding cookie | Backend: SHA-256 hashes. Ticket: 2 min, single use | Reusable, logged |
 | Storage PKCE verifier | Backend: encrypted until the callback, then cleared | Plaintext at rest |
@@ -73,6 +76,26 @@ Details: [google-drive.md](google-drive.md).
 - **Disconnect is local:** it deletes HyperDrive's credentials. It does **not** revoke the
   Google grant, and the UI and docs say so.
 
+### Dropbox (Batch 4)
+
+Details: [dropbox.md](dropbox.md).
+
+- **Shared protections:** Dropbox uses the same transaction protections as Drive: ticket,
+  hashed state, binding cookie, single-use callback, owner-only status, expiry.
+- **Bound to its provider:** callbacks are claimed **per provider**, so a Google state can't
+  complete a Dropbox attempt. The binding cookie is path-scoped per provider, so parallel
+  attempts don't collide.
+- **Identity:** `account_id` from `users/get_current_account` must equal the token response's
+  `account_id`. Email is never used for identity.
+- **No PKCE:** Spring's default PKCE is explicitly removed for Dropbox, and a test checks it's
+  absent. Protection comes from the client secret, state, binding cookie and expiry.
+- **Read-only scopes:** `account_info.read files.metadata.read`; no write or content scopes.
+- **Root:** every files call is pinned to the stored root namespace (`Dropbox-API-Path-Root`).
+  The namespace is validated as digits before it goes into the header.
+- **Continuations:** provider cursors never reach the desktop. Wrapped continuations fail for any
+  other account, provider or folder, before any provider call.
+- **Disconnect:** local only. `auth/token/revoke` isn't called; see [dropbox.md](dropbox.md).
+
 ## Desktop
 
 - **Electron hardening (Batch 1):** sandbox, context isolation, no Node in the renderer, strict
@@ -82,10 +105,12 @@ Details: [google-drive.md](google-drive.md).
   other channel takes no arguments.
 - **System browser:** `shell.openExternal` is reachable only from main-process sign-in and
   storage code, and only for `<trusted backend origin>/api/v1/auth/desktop/authorize/<uuid>`
-  or `<trusted backend origin>/api/v1/storage-connections/google/authorize/hds_<ticket>`.
-  Each check runs twice.
-- **Storage IPC:** account and transaction IDs must be UUIDs. Folder and file IDs must match
-  Drive's ID alphabet, and page tokens must be bounded printable ASCII. Unknown keys are
+  or `<trusted backend origin>/api/v1/storage-connections/{google|dropbox}/authorize/hds_<ticket>`
+  for the provider requested. Each check runs twice.
+- **Storage IPC:** account and transaction IDs must be UUIDs, and `provider` must be one of the
+  enum values. File IDs must match the Drive or Dropbox ID alphabet. Directory locators must be
+  bounded and free of control characters (the backend validates them per provider), and
+  continuations must be bounded printable ASCII. Unknown keys are
   rejected. The main process only polls attempts it started, and every response is re-parsed
   field by field, so no token-shaped value can reach the renderer.
 - **Loopback listener:** bound to `127.0.0.1` on an OS-assigned port. It accepts only
@@ -96,8 +121,8 @@ Details: [google-drive.md](google-drive.md).
 
 ## Known limitations
 
-- **Live Google sign-in and Drive not verified:** neither has been run against a real Google
-  OAuth client (no credentials were available). Automated tests use a fake Google. See the
+- **Live Google sign-in, Drive and Dropbox not verified:** none has been run against a real
+  Google OAuth client or Dropbox app (no credentials were available). Automated tests use a fake Google. See the
   manual QA checklists.
 - **Forwarded connection links:** an attacker who sends a victim their own storage authorize
   link (within its 2-minute ticket lifetime) could get the victim to grant Drive access to the

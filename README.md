@@ -5,11 +5,12 @@ HyperDrive is a Windows desktop application, in early development, that will bri
 Files will stream on demand in 4 MiB chunks and be cached on the local disk, so they don't need
 to be downloaded in full first.
 
-> **Status: accounts + read-only Google Drive browsing.** You can sign in with Google (which
-> creates a HyperDrive account), choose a username, then **separately** connect a Google Drive
-> account and browse its folders and file metadata. There is **no file download, streaming,
-> caching, virtual drive or Dropbox yet**. Live Google Drive use has not been tested with real
-> credentials yet. See [docs/progress.md](docs/progress.md).
+> **Status: accounts + read-only Google Drive and Dropbox browsing.** You can sign in with
+> Google (which creates a HyperDrive account), choose a username, then **separately** connect
+> Google Drive and Dropbox accounts and browse their folders and file metadata in one "All
+> storage" view. There is **no file download, streaming, caching or virtual drive yet**. Live
+> Google Drive and Dropbox use has not been tested with real credentials yet. See
+> [docs/progress.md](docs/progress.md).
 
 The launch website is a separate project and is not part of this repository.
 
@@ -34,14 +35,25 @@ The launch website is a separate project and is not part of this repository.
   - Browse My Drive folders with pagination, see real metadata (type, size, modified time), and
     disconnect without signing out.
 
+- **Batch 4 (Dropbox, unified browsing):**
+  - "Connect Dropbox" uses its own consent flow, with read-only scopes
+    `account_info.read files.metadata.read` and offline access. Its tokens are encrypted on the
+    backend like Google's.
+  - Several Google Drive and Dropbox accounts can coexist.
+  - **All storage** is a virtual root that lists accounts. The same file table, breadcrumbs and
+    pagination work for both providers.
+  - Dropbox is optional: without `DROPBOX_APP_KEY` the backend still starts and Dropbox shows
+    as not configured.
+  - Provider support matrix: [docs/architecture.md](docs/architecture.md#provider-support-matrix).
+
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
-[docs/google-drive.md](docs/google-drive.md) ·
+[docs/google-drive.md](docs/google-drive.md) · [docs/dropbox.md](docs/dropbox.md) ·
 [docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
 
 ## Not implemented yet
 
-- Dropbox, Shared drives / "Shared with me", opening or downloading files, exporting Google Docs,
-  following shortcuts.
+- Google Shared drives / "Shared with me", opening or downloading files, exporting native
+  documents, following shortcuts or links, OneDrive.
 - The local agent (`agent/`) and the WinFsp virtual drive (`vfs/`).
 - Streaming, caching and metrics.
 - Google OAuth verification: `drive.readonly` is a restricted scope. HyperDrive is unverified
@@ -118,7 +130,12 @@ profile. Nothing simulates a login.
    npm run dev
    ```
 5. Click **Continue with Google**, finish in the browser, then choose a username.
-6. Optional: **Cloud Accounts → Connect Google Drive**. This first needs the Drive API enabled
+6. Optional: **Cloud Accounts → Connect Dropbox**. First create a Dropbox app (Full Dropbox,
+   scopes `account_info.read` + `files.metadata.read`, redirect URI
+   `http://127.0.0.1:18080/api/v1/storage-connections/dropbox/callback`), then set
+   `$env:DROPBOX_APP_KEY` and `$env:DROPBOX_APP_SECRET` in the backend window before step 3.
+   See [docs/dropbox.md](docs/dropbox.md#dropbox-app-setup).
+7. Optional: **Cloud Accounts → Connect Google Drive**. This first needs the Drive API enabled
    and the redirect URI `http://127.0.0.1:18080/api/v1/storage-connections/google/callback`
    added to the same OAuth client; see [docs/google-drive.md](docs/google-drive.md#google-cloud-setup).
    Then browse it under **Files**.
@@ -152,6 +169,10 @@ not passed).
 | Backend fails with `HYPERDRIVE_CREDENTIAL_KEY is not set` / `must decode to exactly 32 bytes` | Generate a key as shown in step 3, and use the **same** key every time. A different key makes stored Drive connections unreadable, so you would have to reconnect. |
 | "Connect Google Drive" → Google shows `redirect_uri_mismatch` | Add `<HYPERDRIVE_PUBLIC_BASE_URL>/api/v1/storage-connections/google/callback` to the OAuth client's redirect URIs. |
 | Google Drive account shows **Needs reconnect** | The grant was revoked or expired. In Google's Testing mode authorizations expire after 7 days. Click **Reconnect**. |
+| Backend fails with `Dropbox is partially configured` | Set both `DROPBOX_APP_KEY` and `DROPBOX_APP_SECRET`, or neither. |
+| "Connect Dropbox" is disabled ("Not configured on this HyperDrive server") | Set `DROPBOX_APP_KEY` and `DROPBOX_APP_SECRET` in the backend window and restart it. |
+| Dropbox shows an invalid `redirect_uri` error | Add `<HYPERDRIVE_PUBLIC_BASE_URL>/api/v1/storage-connections/dropbox/callback` to the Dropbox app's Redirect URIs. |
+| Dropbox connects your already-signed-in Dropbox account instead of another one | Sign out of Dropbox in the browser (or use a private window) before connecting. |
 | Files says Google Drive "could not be reached" | Enable the **Google Drive API** in the Cloud project, and check network access to `www.googleapis.com`. |
 | Backend fails with `Google redirect URI must be …` or `HYPERDRIVE_PUBLIC_BASE_URL must be …` | Set `HYPERDRIVE_PUBLIC_BASE_URL` to an origin such as `http://127.0.0.1:18080`. |
 | Google shows `redirect_uri_mismatch` | The redirect URI in Google Cloud Console must equal `<HYPERDRIVE_PUBLIC_BASE_URL>/login/oauth2/code/google` exactly. |
@@ -167,7 +188,7 @@ not passed).
 
 ```
 backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions,
-            Google Drive connections and read-only browsing
+            Google Drive and Dropbox connections and read-only browsing
 desktop/    Electron + React desktop app
 agent/      Planned local agent (README only)
 vfs/        Planned WinFsp virtual drive (README only)

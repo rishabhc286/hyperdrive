@@ -4,18 +4,25 @@ import java.time.Instant;
 
 /**
  * Application-owned file metadata, normalized from any provider. Provider SDK or wire models never
- * leave the provider adapter.
+ * leave the provider adapter. Nothing here is invented: unknown values are null.
  *
- * @param providerFileId         opaque provider identifier, passed back unchanged
+ * @param providerFileId         stable, opaque provider identifier (Drive file id, Dropbox {@code id:...})
  * @param kind                   what the entry is
- * @param mimeType               provider-reported MIME type, may be null
- * @param sizeBytes              byte size of downloadable content; null when unknown or not
- *                               meaningful (folders, shortcuts, native provider documents)
- * @param modifiedAt             last modification time, null when the provider did not report one
- * @param canDownload            whether the content can be downloaded as-is (false for folders,
- *                               shortcuts and native documents, which need export)
- * @param shortcutTargetId       for shortcuts only: the target's provider id
- * @param shortcutTargetMimeType for shortcuts only: the target's MIME type as recorded at creation
+ * @param mimeType               provider-reported MIME type; null when the provider has none (Dropbox)
+ * @param sizeBytes              byte size of downloadable content; null when unknown or not meaningful
+ *                               (folders, shortcuts/links, native provider documents)
+ * @param modifiedAt             last modification time reported by the provider, or null
+ * @param canDownload            whether the content could be downloaded as-is (false for folders,
+ *                               links and native documents)
+ * @param directoryLocator       folders only: what to pass back to list this folder. Drive: the folder
+ *                               id. Dropbox: its lower-cased path. Distinct from the stable id.
+ * @param providerRevision       provider revision of the content, when the provider exposes one
+ *                               (Dropbox {@code rev}); null otherwise
+ * @param contentHash            provider-specific content hash, or null
+ * @param contentHashAlgorithm   names the hash scheme (e.g. {@code dropbox-content-hash}); hashes of
+ *                               different providers are not comparable
+ * @param shortcutTargetId       Drive shortcuts only: the target's provider id
+ * @param shortcutTargetMimeType Drive shortcuts only: the target's MIME type as recorded at creation
  */
 public record ProviderFile(
         String providerFileId,
@@ -25,6 +32,10 @@ public record ProviderFile(
         Long sizeBytes,
         Instant modifiedAt,
         boolean canDownload,
+        String directoryLocator,
+        String providerRevision,
+        String contentHash,
+        String contentHashAlgorithm,
         String shortcutTargetId,
         String shortcutTargetMimeType) {
 

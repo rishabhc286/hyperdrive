@@ -2,6 +2,7 @@ package com.hyperdrive.backend.storage.provider.google;
 
 import com.hyperdrive.backend.storage.provider.ProviderException.Category;
 import com.hyperdrive.backend.storage.provider.ProviderFile;
+import com.hyperdrive.backend.storage.provider.ProviderHttp;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import tools.jackson.databind.JsonNode;
@@ -25,11 +26,11 @@ public final class GoogleDriveBrowserTestAccess {
     }
 
     public static Category classify(int status, String retryAfter, String body) {
-        return GoogleDriveBrowser.classify(new GoogleDriveBrowser.Response(status, retryAfter,
+        return GoogleDriveBrowser.classifyResponse(new ProviderHttp.Response(status, retryAfter,
                 body.getBytes(StandardCharsets.UTF_8))).category();
     }
 
     public static Duration retryAfter(String value) {
-        return GoogleDriveBrowser.parseRetryAfter(value);
+        return ProviderHttp.parseRetryAfter(value);
     }
 }

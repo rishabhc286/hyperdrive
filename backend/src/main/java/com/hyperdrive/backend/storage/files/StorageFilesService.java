@@ -25,10 +25,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 /**
- * Read-only browsing of a connected account. Order of operations for every request:
- * ownership check (no provider call for accounts the user does not own) → account status →
- * credentials (refresh if needed) → provider call, with one refresh-and-retry on an authentication
- * failure. Provider failures become stable, sanitized API errors.
+ * Read-only browsing of a connected account, for every provider. Order of operations for every
+ * request: ownership check (no provider call for accounts the user does not own) → account status →
+ * input validation for that provider → credentials (refresh if needed) → provider call, with one
+ * refresh-and-retry on an authentication failure. Provider failures become stable, sanitized API
+ * errors, and provider cursors are wrapped into account-bound continuations.
  */
 @Service
 @ConditionalOnAuthEnabled
@@ -40,31 +41,46 @@ public class StorageFilesService {
     private final ProviderCredentialStore credentials;
     private final Map<StorageProvider, FileBrowser> browsers;
     private final StorageProperties properties;
+    private final ContinuationCodec continuations;
 
     public StorageFilesService(ConnectedAccountService accounts, ProviderCredentialStore credentials,
-            List<FileBrowser> browsers, StorageProperties properties) {
+            List<FileBrowser> browsers, StorageProperties properties, CredentialCipher cipher) {
         this.accounts = accounts;
         this.credentials = credentials;
         this.browsers = browsers.stream().collect(Collectors.toUnmodifiableMap(FileBrowser::provider, b -> b));
         this.properties = properties;
+        this.continuations = new ContinuationCodec(cipher);
     }
 
-    public FilePage list(UUID userId, UUID accountId, String parentId, String pageToken, Integer pageSize) {
+    /**
+     * @param directory    provider directory locator from a folder's {@code directoryLocator}; null = root
+     * @param continuation opaque continuation from the previous page of the same account and directory
+     */
+    public FileListing list(UUID userId, UUID accountId, String directory, String continuation, Integer pageSize) {
         OwnedAccount account = owned(userId, accountId);
-        String folderId = parentId == null ? account.rootFolderId() : parentId;
-        requireValidId(account.provider(), folderId, "parentId");
-        if (pageToken != null && (pageToken.isEmpty() || pageToken.length() > 2048
-                || !pageToken.chars().allMatch(c -> c > 0x20 && c < 0x7f))) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_request", "Invalid or missing fields: pageToken");
+        StorageProvider provider = account.provider();
+        if (directory != null && !provider.isValidDirectory(directory)) {
+            throw invalid("directory");
+        }
+        String providerCursor = null;
+        if (continuation != null) {
+            providerCursor = continuations.unwrap(account.id(), provider, directory, continuation)
+                    .orElseThrow(() -> invalid("continuation"));
         }
         int size = pageSize == null ? properties.defaultPageSize() : Math.clamp(pageSize, 1, properties.maxPageSize());
-        return call(account, (browser, token) -> browser.listChildren(token, folderId, pageToken, size));
+        String cursor = providerCursor;
+        FilePage page = call(account, (browser, token) -> browser.listChildren(token, account.root(), directory, cursor, size));
+        String next = page.providerCursor() == null ? null
+                : continuations.wrap(account.id(), provider, directory, page.providerCursor());
+        return new FileListing(page.items(), next);
     }
 
     public ProviderFile get(UUID userId, UUID accountId, String fileId) {
         OwnedAccount account = owned(userId, accountId);
-        requireValidId(account.provider(), fileId, "fileId");
-        return call(account, (browser, token) -> browser.getFile(token, fileId));
+        if (!account.provider().isValidFileId(fileId)) {
+            throw invalid("fileId");
+        }
+        return call(account, (browser, token) -> browser.getFile(token, account.root(), fileId));
     }
 
     private OwnedAccount owned(UUID userId, UUID accountId) {
@@ -82,11 +98,12 @@ public class StorageFilesService {
     private <T> T call(OwnedAccount account, ProviderCall<T> operation) {
         FileBrowser browser = browsers.get(account.provider());
         if (browser == null) {
-            throw new ApiException(HttpStatus.NOT_IMPLEMENTED, "provider_not_supported", "This provider is not supported yet.");
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "provider_not_configured",
+                    "This storage provider is not configured on this HyperDrive server.");
         }
         try {
             T result;
-            ProviderAccessToken token = credentials.accessToken(account.id());
+            ProviderAccessToken token = credentials.accessToken(account.provider(), account.id());
             try {
                 result = operation.apply(browser, token);
             } catch (ProviderException e) {
@@ -94,7 +111,7 @@ public class StorageFilesService {
                     throw e;
                 }
                 // Once: the token may have been revoked or expired early. A second rejection is final.
-                result = operation.apply(browser, credentials.refresh(account.id(), token));
+                result = operation.apply(browser, credentials.refresh(account.provider(), account.id(), token));
             }
             accounts.recordSuccess(account.id());
             return result;
@@ -111,7 +128,8 @@ public class StorageFilesService {
     }
 
     private ApiException translate(OwnedAccount account, ProviderException e) {
-        log.info("Provider call for account {} failed: {} ({})", account.id(), e.category(), e.getMessage());
+        log.info("Provider call for account {} ({}) failed: {} ({})", account.id(), account.provider(), e.category(),
+                e.getMessage());
         return switch (e.category()) {
             case AUTHENTICATION -> {
                 accounts.markNeedsReconnect(account.id(), "provider_auth_failed");
@@ -121,6 +139,10 @@ public class StorageFilesService {
                 accounts.markNeedsReconnect(account.id(), "insufficient_scope");
                 yield needsReconnect();
             }
+            case ROOT_UNAVAILABLE -> {
+                accounts.markNeedsReconnect(account.id(), "root_changed");
+                yield needsReconnect();
+            }
             case PERMISSION_DENIED -> {
                 accounts.recordError(account.id(), "provider_permission_denied");
                 yield new ApiException(HttpStatus.FORBIDDEN, "provider_permission_denied",
@@ -128,6 +150,8 @@ public class StorageFilesService {
             }
             case NOT_FOUND -> new ApiException(HttpStatus.NOT_FOUND, "file_not_found",
                     "This item no longer exists or is not accessible.");
+            case CURSOR_RESET -> new ApiException(HttpStatus.CONFLICT, "continuation_expired",
+                    "This listing changed or expired. Refresh the folder.");
             case RATE_LIMITED -> {
                 accounts.recordError(account.id(), "provider_rate_limited");
                 ApiException limited = new ApiException(HttpStatus.TOO_MANY_REQUESTS, "provider_rate_limited",
@@ -147,10 +171,8 @@ public class StorageFilesService {
         };
     }
 
-    private static void requireValidId(StorageProvider provider, String id, String field) {
-        if (!provider.isValidFileId(id)) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "invalid_request", "Invalid or missing fields: " + field);
-        }
+    private static ApiException invalid(String field) {
+        return new ApiException(HttpStatus.BAD_REQUEST, "invalid_request", "Invalid or missing fields: " + field);
     }
 
     /** Same response whether the account does not exist or belongs to someone else. */

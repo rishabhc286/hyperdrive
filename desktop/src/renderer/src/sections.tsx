@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
 import type { SafeUser } from '../../shared/auth';
-import type { StorageApi } from '../../shared/storage';
+import type { StorageApi, StorageProvider } from '../../shared/storage';
 import { CloudAccounts } from './CloudAccounts';
 import { FilesBrowser } from './FilesBrowser';
-import { accountLabel } from './storage-format';
+import { accountTitle } from './storage-format';
 import type { AccountsState, ConnectionFlow } from './useStorage';
 import type { BackendStatus } from './useBackendHealth';
 
@@ -27,7 +27,8 @@ interface SectionViewProps {
   readonly accounts: AccountsState;
   readonly onReloadAccounts: () => void;
   readonly connection: ConnectionFlow;
-  readonly onConnect: () => void;
+  readonly availability: ReadonlyMap<StorageProvider, boolean> | null;
+  readonly onConnect: (provider: StorageProvider) => void;
   readonly onCancelConnection: () => void;
   readonly onDismissConnection: () => void;
 }
@@ -52,6 +53,7 @@ export function SectionView(props: SectionViewProps) {
           accounts={props.accounts}
           onReloadAccounts={props.onReloadAccounts}
           connection={props.connection}
+          availability={props.availability}
           onConnect={props.onConnect}
           onCancelConnection={props.onCancelConnection}
           onDismissConnection={props.onDismissConnection}
@@ -91,17 +93,17 @@ function Overview({ user, backendStatus, onRecheckBackend, onNavigate, accounts 
           {connected.length === 0 ? (
             <>
               <p className="empty-title">{accounts.status === 'loading' ? 'Loading…' : NO_ACCOUNTS}</p>
-              <p className="muted">Connect Google Drive to browse it here (read-only). Dropbox arrives later.</p>
+              <p className="muted">Connect Google Drive or Dropbox to browse it here (read-only).</p>
             </>
           ) : (
             <>
               <p>
-                {connected.length} Google Drive {connected.length === 1 ? 'account' : 'accounts'} connected (read-only).
+                {connected.length} storage {connected.length === 1 ? 'account' : 'accounts'} connected (read-only).
               </p>
               <ul className="small">
                 {connected.map((a) => (
                   <li key={a.id}>
-                    {accountLabel(a)}
+                    {accountTitle(a)}
                     {a.status === 'NEEDS_RECONNECT' ? ' (needs reconnect)' : ''}
                   </li>
                 ))}
@@ -115,8 +117,9 @@ function Overview({ user, backendStatus, onRecheckBackend, onNavigate, accounts 
 
         <article className="card" aria-labelledby="drive-card-title">
           <h2 id="drive-card-title">Virtual drive</h2>
+          <p className="empty-title">Virtual drive not implemented yet.</p>
           <p className="muted">
-            The read-only Windows virtual drive is not part of this build, so no drive is created.
+            No Windows drive letter is created in this build, and no file content is cached on this PC.
           </p>
         </article>
       </div>

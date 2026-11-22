@@ -76,7 +76,7 @@ class DriveBrowsingTest extends StorageIntegrationTest {
 
         JsonNode items = page.get("items");
         assertThat(items).hasSize(5);
-        assertThat(page.get("nextPageToken").isNull()).isTrue();
+        assertThat(page.get("continuation").isNull()).isTrue();
         Map<String, JsonNode> byId = new java.util.HashMap<>();
         items.forEach(i -> byId.put(i.get("providerFileId").asString(), i));
         assertThat(byId).doesNotContainKey("gone");
@@ -128,9 +128,9 @@ class DriveBrowsingTest extends StorageIntegrationTest {
     @Test
     void emptyFolderReturnsNoItemsAndNoCursor() throws Exception {
         google.add(SUB, DriveFile.folder("empty", "Empty", ROOT));
-        JsonNode page = storage.apiJson(token, files("parentId=empty"));
+        JsonNode page = storage.apiJson(token, files("directory=empty"));
         assertThat(page.get("items")).isEmpty();
-        assertThat(page.get("nextPageToken").isNull()).isTrue();
+        assertThat(page.get("continuation").isNull()).isTrue();
     }
 
     @Test
@@ -143,10 +143,10 @@ class DriveBrowsingTest extends StorageIntegrationTest {
         String cursor = null;
         int pages = 0;
         do {
-            JsonNode page = storage.apiJson(token, files("parentId=sub&pageSize=2"
-                    + (cursor == null ? "" : "&pageToken=" + cursor)));
+            JsonNode page = storage.apiJson(token, files("directory=sub&pageSize=2"
+                    + (cursor == null ? "" : "&continuation=" + cursor)));
             page.get("items").forEach(i -> names.add(i.get("name").asString()));
-            cursor = page.get("nextPageToken").isNull() ? null : page.get("nextPageToken").asString();
+            cursor = page.get("continuation").isNull() ? null : page.get("continuation").asString();
             pages++;
         } while (cursor != null);
 
@@ -164,9 +164,9 @@ class DriveBrowsingTest extends StorageIntegrationTest {
 
     @Test
     void malformedIdentifiersAreRejectedBeforeAnyProviderCall() throws Exception {
-        assertThat(storage.api(token, files("parentId=a'b")).getResponse().getStatus()).isEqualTo(400);
-        assertThat(storage.api(token, files("parentId=../x")).getResponse().getStatus()).isEqualTo(400);
-        assertThat(storage.api(token, files("pageToken=" + "x".repeat(2049))).getResponse().getStatus()).isEqualTo(400);
+        assertThat(storage.api(token, files("directory=a'b")).getResponse().getStatus()).isEqualTo(400);
+        assertThat(storage.api(token, files("directory=../x")).getResponse().getStatus()).isEqualTo(400);
+        assertThat(storage.api(token, files("continuation=" + "x".repeat(2049))).getResponse().getStatus()).isEqualTo(400);
         assertThat(storage.api(token, "/api/v1/accounts/" + accountId + "/files/a%27b").getResponse().getStatus())
                 .isEqualTo(400);
         assertThat(storage.api(token, "/api/v1/accounts/not-a-uuid/files").getResponse().getStatus()).isEqualTo(400);

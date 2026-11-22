@@ -6,7 +6,11 @@ import com.hyperdrive.backend.config.ConditionalOnAuthEnabled;
 import com.hyperdrive.backend.storage.provider.StorageProvider;
 import com.hyperdrive.backend.web.ApiException;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -27,26 +31,46 @@ import org.springframework.web.util.UriComponentsBuilder;
 @ConditionalOnAuthEnabled
 public class StorageConnectionController {
 
-    public static final String AUTHORIZE_PATH = "/api/v1/storage-connections/google/authorize";
-
     public record TransactionCreated(UUID transactionId, String authorizationUrl, Instant expiresAt) {
+    }
+
+    /** Which providers this backend can connect (Dropbox is optional configuration). */
+    public record ProviderAvailability(StorageProvider provider, boolean available) {
+    }
+
+    public record ProviderList(List<ProviderAvailability> items) {
     }
 
     private final StorageConnectionService transactions;
     private final AuthProperties authProperties;
+    private final Set<StorageProvider> configured;
 
-    public StorageConnectionController(StorageConnectionService transactions, AuthProperties authProperties) {
+    public StorageConnectionController(StorageConnectionService transactions, AuthProperties authProperties,
+            List<ConnectionCompleter> completers) {
         this.transactions = transactions;
         this.authProperties = authProperties;
+        this.configured = completers.stream().map(ConnectionCompleter::provider).collect(Collectors.toUnmodifiableSet());
+    }
+
+    @GetMapping("/providers")
+    public ResponseEntity<ProviderList> providers() {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new ProviderList(Arrays.stream(StorageProvider.values())
+                .map(p -> new ProviderAvailability(p, configured.contains(p))).toList()));
     }
 
     /** No request body: provider comes from the path, owner from the session. */
-    @PostMapping("/google/transactions")
-    public ResponseEntity<TransactionCreated> createGoogle(@AuthenticationPrincipal SessionPrincipal principal) {
-        StorageConnectionService.Created created =
-                transactions.create(principal.userId(), principal.sessionId(), StorageProvider.GOOGLE_DRIVE);
+    @PostMapping("/{provider:google|dropbox}/transactions")
+    public ResponseEntity<TransactionCreated> create(@AuthenticationPrincipal SessionPrincipal principal,
+            @PathVariable String provider) {
+        StorageProvider p = StorageProvider.fromPathSegment(provider).orElseThrow();
+        if (!configured.contains(p)) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "provider_not_configured",
+                    "This storage provider is not configured on this HyperDrive server.");
+        }
+        StorageConnectionService.Created created = transactions.create(principal.userId(), principal.sessionId(), p);
         String url = UriComponentsBuilder.fromUri(authProperties.publicBaseUrl())
-                .path(AUTHORIZE_PATH).path("/{ticket}").buildAndExpand(created.ticket()).toUriString();
+                .path(StorageBrowserController.authorizePath(p)).path("/{ticket}").buildAndExpand(created.ticket())
+                .toUriString();
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
                 .body(new TransactionCreated(created.id(), url, created.expiresAt()));
     }

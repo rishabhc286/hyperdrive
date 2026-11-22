@@ -2,8 +2,9 @@
 
 Status labels: **Implemented** (exists and is tested in this repository) and **Planned** (designed,
 not built). Implemented today: the desktop shell, backend health/readiness, Google sign-in
-with HyperDrive accounts and device sessions (Batch 2), and Google Drive connection with
-read-only metadata browsing through the backend (Batch 3).
+with HyperDrive accounts and device sessions (Batch 2), Google Drive connection with
+read-only metadata browsing through the backend (Batch 3), and Dropbox plus a unified "All
+storage" browser (Batch 4).
 
 ## Components
 
@@ -57,18 +58,29 @@ provider range requests, own the local chunk cache, hold device credentials, and
 C++ WinFsp filesystem (`vfs/`) that mounts the read-only drive and forwards every request to the
 local agent.
 
-### Cloud storage (Batch 3): implemented for Google Drive metadata
+### Cloud storage (Batches 3–4): implemented for Google Drive and Dropbox metadata
 
 - **Flow:** the desktop asks the backend to start a Drive connection. The backend runs Google's
   consent with `drive.readonly`, stores the Google tokens **encrypted on the backend**, and
   serves folder listings through `/api/v1/accounts/{id}/files`.
-- **Provider abstraction:** a small `FileBrowser` interface (root, list children, get file),
-  implemented by `GoogleDriveBrowser`. It returns application-owned `ProviderFile` metadata, so
-  Drive wire models stay inside the adapter. OAuth orchestration (`storage/connect`) is
-  separate from browsing (`storage/files`).
+- **Provider abstraction, browsing:** a small `FileBrowser` interface (list children, get file;
+  the account's `AccountRoot` is passed in), implemented by `GoogleDriveBrowser` and
+  `DropboxBrowser`.
+  - Both return application-owned `ProviderFile` metadata. Stable `providerFileId` is kept
+    separate from `directoryLocator` (Drive: folder ID; Dropbox: `path_lower`).
+  - Revision and content hash are labeled by algorithm. Nothing is invented: Dropbox has no MIME
+    types, so `mimeType` stays null.
+  - Shared HTTP retry and backoff is `ProviderHttp`.
+- **Provider abstraction, connecting:** `StorageOAuth` (Spring Security plumbing, with optional
+  PKCE) plus one `ConnectionCompleter` per provider, which handles identity, scopes and root.
+  This is separate from browsing (`storage/files`).
+- **Pagination:** provider cursors are wrapped into encrypted, account-bound continuations
+  (`ContinuationCodec`).
+- **All storage:** a desktop-side **virtual** navigation root that lists accounts. It's never
+  sent to a provider and never merges files across clouds.
 - **What's stored:** listings are fetched on demand and not stored.
-- **Not built:** content transfer, caching and Dropbox. They come in later batches through the
-  same abstraction. See [google-drive.md](google-drive.md).
+- **Not built:** content transfer and caching. See [google-drive.md](google-drive.md) and
+  [dropbox.md](dropbox.md).
 - **Token location, for now:** in this batch provider tokens live on the backend. Where they
   should live once the local agent streams content (device-held credentials, per the agent
   plan below) is an open design decision for that batch.
@@ -90,9 +102,9 @@ Provided by `compose.yaml` for development, and required in auth mode, with a Fl
 schema.
 - **Sign-in data:** users, Google sign-in identities (issuer + subject), device sessions, login
   transactions, and token **hashes**.
-- **Storage data (Batch 3):** connected storage accounts, storage authorization transactions,
-  and Google Drive tokens **encrypted** with AES-256-GCM, with the key kept outside the
-  database.
+- **Storage data (Batches 3–4):** connected storage accounts (Dropbox rows add a typed
+  `root_namespace_id` and `root_type`), storage authorization transactions, and Google Drive and
+  Dropbox tokens **encrypted** with AES-256-GCM, with the key kept outside the database.
 - **Not stored:** file contents, and file listings.
 
 ### Redis: optional, planned use
@@ -113,7 +125,27 @@ user's machine, in the agent's cache directory. They will **not** be stored in R
   callback and encrypted token storage. It may use a different Google account.
 - **Disconnecting:** never deletes the HyperDrive account or the remote files, and doesn't sign
   the user out.
-- **Dropbox:** will follow the same model.
+- **Dropbox (implemented):** the same model, with its own consent, callback and identity
+  (`account_id`).
+
+## Provider support matrix
+
+| Capability | Google Drive | Dropbox |
+| --- | --- | --- |
+| Connect (separate from sign-in, own consent) | Implemented | Implemented |
+| Account identity | OIDC subject (validated ID token) | `account_id` from `users/get_current_account` |
+| Scopes | `drive.readonly` (restricted) + `openid email profile` | `account_info.read files.metadata.read` |
+| Root browsing | My Drive root | Account root via `Dropbox-API-Path-Root` (team space for team members) |
+| Nested folders | Yes (by folder id) | Yes (by `path_lower`) |
+| Pagination | Yes (`nextPageToken`, wrapped) | Yes (`cursor` + `list_folder/continue`, wrapped) |
+| Shared drives / "Shared with me" | Not implemented | n/a (team space supported, untested live) |
+| Native documents | Labeled, no size, not downloadable | Non-downloadable cloud docs labeled, no size |
+| Shortcuts / links | Shown, not followed | Shown as "Link", not followed |
+| Content download | **Not implemented** | **Not implemented** |
+| Streaming (range reads) | **Not implemented** | **Not implemented** |
+| Writes (upload/edit/rename/move/delete) | **Not implemented** | **Not implemented** |
+| Mounted drive (WinFsp) | **Not implemented** | **Not implemented** |
+| Live end-to-end verification | Not yet (no OAuth client) | Not yet (no Dropbox app) |
 
 ## Desktop security
 
@@ -125,16 +157,17 @@ Implemented in `desktop/src/main` and covered by unit tests plus manual end-to-e
 - **Preload bridge:** it exposes `window.hyperdrive.checkBackendHealth()`,
   `window.hyperdrive.auth` (`getStatus`, `signInWithGoogle`, `cancelSignIn`,
   `completeOnboarding({ username })`, `signOut`, `retry`, `onStatusChange`) and
-  `window.hyperdrive.storage` (`listAccounts`, `beginGoogleConnection`,
+  `window.hyperdrive.storage` (`listAccounts`, `listProviders`, `beginConnection({ provider })`,
   `getConnectionStatus({ transactionId })`, `cancelConnection({ transactionId })`,
-  `listFiles({ accountId, parentId, pageToken })`, `getFileMetadata({ accountId, fileId })`,
+  `listFiles({ accountId, directory, continuation })`, `getFileMetadata({ accountId, fileId })`,
   `disconnectAccount({ accountId })`). None of them accepts a URL or returns a token. Raw `ipcRenderer`, filesystem, shell and URL-opening APIs are not
   exposed.
 - **IPC handlers:** they answer only the app's own window and main frame, at the trusted renderer
   URL. They reject unexpected arguments; onboarding accepts exactly `{ username: string }`.
 - **System browser:** only main-process sign-in and storage code can open it, and only for the
   trusted backend's `/api/v1/auth/desktop/authorize/<uuid>` or
-  `/api/v1/storage-connections/google/authorize/hds_<ticket>` URL.
+  `/api/v1/storage-connections/{google|dropbox}/authorize/hds_<ticket>` URL, for the provider the
+  user chose.
 - **Backend address:** it comes only from `HYPERDRIVE_BACKEND_URL` in the main process, and must be
   an http(s) origin with no credentials, path, query or fragment. Requests use a timeout and
   `redirect: 'error'`, and failures become an "unavailable" state, never a crash.

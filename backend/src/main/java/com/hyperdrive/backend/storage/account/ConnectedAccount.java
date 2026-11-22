@@ -9,7 +9,9 @@ import java.util.UUID;
  * A connected storage account as returned by the API. Contains no credentials, no provider
  * subject and no internal ids other than HyperDrive's own account id.
  *
- * @param email provider email, only if the provider marked it verified; may be null
+ * @param email    provider email, only if the provider marked it verified; may be null
+ * @param rootType Dropbox only: {@code USER} (personal or member folder root) or {@code TEAM}
+ *                 (team space root); null for Google Drive
  */
 public record ConnectedAccount(
         UUID id,
@@ -17,6 +19,7 @@ public record ConnectedAccount(
         String displayName,
         String email,
         Status status,
+        String rootType,
         List<String> grantedScopes,
         Instant connectedAt,
         Instant updatedAt,

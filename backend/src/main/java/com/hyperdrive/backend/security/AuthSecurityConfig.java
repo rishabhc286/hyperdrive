@@ -86,7 +86,9 @@ public class AuthSecurityConfig {
                         // OAuth state + a browser-binding cookie; never by a HyperDrive bearer token.
                         .requestMatchers(HttpMethod.GET,
                                 "/api/v1/storage-connections/google/authorize/*",
-                                "/api/v1/storage-connections/google/callback").permitAll()
+                                "/api/v1/storage-connections/google/callback",
+                                "/api/v1/storage-connections/dropbox/authorize/*",
+                                "/api/v1/storage-connections/dropbox/callback").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/desktop/transactions",
                                 "/api/v1/auth/desktop/exchange",

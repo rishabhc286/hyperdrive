@@ -243,8 +243,9 @@ session that created it, to the provider, and to a 10-minute expiry.
 - Trash and search.
 - Any recursive or background enumeration. Listings are never stored in PostgreSQL.
 
-**Paging:** `pageSize` defaults to 100 and is clamped to 1–200 on the server. Drive's
-`nextPageToken` is passed through unchanged, and the UI shows **Load more**.
+**Paging:** `pageSize` defaults to 100 and is clamped to 1–200 on the server. Since Batch 4,
+Drive's `nextPageToken` is wrapped into an encrypted, account- and folder-bound HyperDrive
+`continuation` (see [dropbox.md](dropbox.md#browsing)), and the UI shows **Load more**.
 
 ### Metadata and its limits
 
@@ -272,7 +273,7 @@ session that created it, to the provider, and to a 10-minute expiry.
 | `GET /storage-connections/google/callback` | Browser only: Google's redirect back |
 | `GET /accounts` · `GET /accounts/{id}` | Connected accounts (no credentials, no provider subject) |
 | `DELETE /accounts/{id}` | Disconnect (see below) |
-| `GET /accounts/{id}/files?parentId=&pageToken=&pageSize=` | Folder listing `{ items, nextPageToken }` |
+| `GET /accounts/{id}/files?directory=&continuation=&pageSize=` | Folder listing `{ items, continuation }`. `directory` is a folder's `directoryLocator` (for Drive, its id); `continuation` is the opaque value from the previous page (Batch 4 renamed these from `parentId`/`pageToken`/`nextPageToken`) |
 | `GET /accounts/{id}/files/{fileId}` | Metadata of one item |
 
 **Ownership:** it's checked in SQL (`WHERE id = ? AND user_id = <session user>`) **before**

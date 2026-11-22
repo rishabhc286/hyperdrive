@@ -62,12 +62,19 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
 export function createMockStorage() {
   return {
     listAccounts: vi.fn<StorageApi['listAccounts']>(() => Promise.resolve({ ok: true, value: [] })),
-    beginGoogleConnection: vi.fn<StorageApi['beginGoogleConnection']>(() =>
-      Promise.resolve({ ok: false, error: 'unknown' })
+    listProviders: vi.fn<StorageApi['listProviders']>(() =>
+      Promise.resolve({
+        ok: true,
+        value: [
+          { provider: 'GOOGLE_DRIVE', available: true },
+          { provider: 'DROPBOX', available: true }
+        ]
+      })
     ),
+    beginConnection: vi.fn<StorageApi['beginConnection']>(() => Promise.resolve({ ok: false, error: 'unknown' })),
     getConnectionStatus: vi.fn<StorageApi['getConnectionStatus']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
     cancelConnection: vi.fn<StorageApi['cancelConnection']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
-    listFiles: vi.fn<StorageApi['listFiles']>(() => Promise.resolve({ ok: true, value: { items: [], nextPageToken: null } })),
+    listFiles: vi.fn<StorageApi['listFiles']>(() => Promise.resolve({ ok: true, value: { items: [], continuation: null } })),
     getFileMetadata: vi.fn<StorageApi['getFileMetadata']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
     disconnectAccount: vi.fn<StorageApi['disconnectAccount']>(() => Promise.resolve({ ok: true, value: null }))
   };

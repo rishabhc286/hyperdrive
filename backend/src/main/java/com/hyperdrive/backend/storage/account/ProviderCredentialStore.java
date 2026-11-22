@@ -1,11 +1,15 @@
 package com.hyperdrive.backend.storage.account;
 
 import com.hyperdrive.backend.config.ConditionalOnAuthEnabled;
-import com.hyperdrive.backend.storage.connect.GoogleStorageOAuth;
+import com.hyperdrive.backend.storage.connect.StorageOAuth;
 import com.hyperdrive.backend.storage.crypto.CredentialCipher;
 import com.hyperdrive.backend.storage.provider.ProviderAccessToken;
 import com.hyperdrive.backend.storage.provider.ProviderException;
 import com.hyperdrive.backend.storage.provider.ProviderException.Category;
+import com.hyperdrive.backend.storage.provider.StorageProvider;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -63,15 +67,15 @@ public class ProviderCredentialStore {
     private final TransactionTemplate tx;
     private final Clock clock;
     private final CredentialCipher cipher;
-    private final GoogleStorageOAuth oauth;
+    private final Map<StorageProvider, StorageOAuth> oauth;
 
     public ProviderCredentialStore(JdbcClient jdbc, TransactionTemplate tx, Clock clock, CredentialCipher cipher,
-            GoogleStorageOAuth oauth) {
+            List<StorageOAuth> oauthClients) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.clock = clock;
         this.cipher = cipher;
-        this.oauth = oauth;
+        this.oauth = oauthClients.stream().collect(Collectors.toUnmodifiableMap(StorageOAuth::provider, o -> o));
     }
 
     /**
@@ -85,19 +89,20 @@ public class ProviderCredentialStore {
     }
 
     /** A usable access token, refreshing first if it is missing or about to expire. */
-    public ProviderAccessToken accessToken(UUID accountId) {
+    public ProviderAccessToken accessToken(StorageProvider provider, UUID accountId) {
         Row row = load(accountId, false).orElseThrow(() -> new ReconnectRequiredException("credentials_missing"));
         if (row.accessExpiresAt().minus(EXPIRY_SKEW).isAfter(clock.instant())) {
             return new ProviderAccessToken(decrypt(accountId, row.access(), row.keyVersion(), "access"));
         }
-        return refresh(accountId, null);
+        return refresh(provider, accountId, null);
     }
 
     /**
      * Refreshes under a row lock. If another request already replaced {@code rejected} (or the stored
      * token is still fresh and was not rejected), returns that token without calling Google.
      */
-    public ProviderAccessToken refresh(UUID accountId, ProviderAccessToken rejected) {
+    public ProviderAccessToken refresh(StorageProvider provider, UUID accountId, ProviderAccessToken rejected) {
+        StorageOAuth client = oauth.get(provider);
         return tx.execute(status -> {
             jdbc.sql("SET LOCAL lock_timeout = '20s'").update();
             Row row = load(accountId, true).orElseThrow(() -> new ReconnectRequiredException("credentials_missing"));
@@ -109,10 +114,14 @@ public class ProviderCredentialStore {
             if (row.refresh() == null) {
                 throw new ReconnectRequiredException("no_refresh_token");
             }
+            if (client == null) {
+                // e.g. Dropbox app credentials were removed from the server configuration.
+                throw new ProviderException(Category.UNAVAILABLE, "Provider " + provider + " is not configured");
+            }
             String refreshToken = decrypt(accountId, row.refresh(), row.keyVersion(), "refresh");
             OAuth2AccessTokenResponse response;
             try {
-                response = oauth.refresh(current, row.accessExpiresAt(), refreshToken);
+                response = client.refresh(current, row.accessExpiresAt(), refreshToken);
             } catch (OAuth2AuthorizationException e) {
                 String error = e.getError().getErrorCode();
                 log.info("Provider refresh rejected for account {}: {}", accountId, error);

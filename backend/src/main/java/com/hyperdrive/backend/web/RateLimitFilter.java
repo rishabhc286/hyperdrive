@@ -28,7 +28,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
             DESKTOP + "exchange", RateLimitProperties::exchange,
             "/api/v1/auth/refresh", RateLimitProperties::refresh,
             "/api/v1/me/onboarding", RateLimitProperties::onboarding,
-            STORAGE + "google/transactions", RateLimitProperties::storageTransactions);
+            STORAGE + "google/transactions", RateLimitProperties::storageTransactions,
+            STORAGE + "dropbox/transactions", RateLimitProperties::storageTransactions);
 
     public RateLimitFilter(RateLimiter limiter, RateLimitProperties properties) {
         this.limiter = limiter;
@@ -48,7 +49,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
             bucket = DESKTOP + "authorize";
             limit = properties.authorize();
         } else if ("GET".equals(request.getMethod()) && (path.startsWith(STORAGE + "google/authorize/")
-                || path.equals(STORAGE + "google/callback"))) {
+                || path.equals(STORAGE + "google/callback") || path.startsWith(STORAGE + "dropbox/authorize/")
+                || path.equals(STORAGE + "dropbox/callback"))) {
             bucket = STORAGE + "browser";
             limit = properties.storageBrowser();
         } else if (path.startsWith(STORAGE + "transactions/")) {

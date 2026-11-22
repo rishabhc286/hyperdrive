@@ -1,6 +1,7 @@
 package com.hyperdrive.backend.storage.provider.google;
 
 import com.hyperdrive.backend.config.StorageProperties;
+import com.hyperdrive.backend.storage.provider.AccountRoot;
 import com.hyperdrive.backend.storage.provider.FileBrowser;
 import com.hyperdrive.backend.storage.provider.FilePage;
 import com.hyperdrive.backend.storage.provider.ProviderAccessToken;
@@ -8,22 +9,24 @@ import com.hyperdrive.backend.storage.provider.ProviderException;
 import com.hyperdrive.backend.storage.provider.ProviderException.Category;
 import com.hyperdrive.backend.storage.provider.ProviderFile;
 import com.hyperdrive.backend.storage.provider.ProviderFile.FileKind;
+import com.hyperdrive.backend.storage.provider.ProviderHttp;
+import com.hyperdrive.backend.storage.provider.ProviderHttp.Response;
 import com.hyperdrive.backend.storage.provider.StorageProvider;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -32,13 +35,10 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Google Drive API v3 adapter: read-only metadata of "My Drive". Requests only the fields HyperDrive
  * uses, excludes trashed items, never enumerates recursively, and maps Drive's JSON straight into
- * {@link ProviderFile}. Drive wire models never leave this class.
- *
- * <p>Retries: rate limits (429, 403 rate-limit reasons), 5xx and I/O errors are retried at most
- * {@code maxRetries} times with exponential backoff and jitter, honoring {@code Retry-After} when it
- * is short enough. Permission and authentication failures are never retried here.
+ * {@link ProviderFile}. Drive wire models never leave this class. Transport policy (retries,
+ * backoff, Retry-After) is the shared {@link ProviderHttp}.
  */
-public class GoogleDriveBrowser implements FileBrowser {
+public class GoogleDriveBrowser implements FileBrowser, ProviderHttp.Classifier {
 
     public static final String FOLDER_MIME = "application/vnd.google-apps.folder";
     public static final String SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
@@ -55,21 +55,14 @@ public class GoogleDriveBrowser implements FileBrowser {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final Logger log = LoggerFactory.getLogger(GoogleDriveBrowser.class);
 
-    /** Waits between retries; replaceable in tests. */
-    public interface Sleeper {
-        void sleep(Duration duration) throws InterruptedException;
-    }
-
     private final RestClient http;
     private final URI baseUrl;
-    private final StorageProperties properties;
-    private final Sleeper sleeper;
+    private final ProviderHttp transport;
 
-    public GoogleDriveBrowser(RestClient http, StorageProperties properties, Sleeper sleeper) {
+    public GoogleDriveBrowser(RestClient http, StorageProperties properties, ProviderHttp.Sleeper sleeper) {
         this.http = http;
         this.baseUrl = properties.driveApiBaseUrl();
-        this.properties = properties;
-        this.sleeper = sleeper;
+        this.transport = new ProviderHttp(properties, sleeper, "Google Drive");
     }
 
     @Override
@@ -77,9 +70,8 @@ public class GoogleDriveBrowser implements FileBrowser {
         return StorageProvider.GOOGLE_DRIVE;
     }
 
-    @Override
+    /** Resolves the My Drive root id at connect time ("root" is Drive's documented file-id alias). */
     public String rootFolderId(ProviderAccessToken token) {
-        // "root" is Drive's documented alias for the My Drive root wherever a file id is accepted.
         URI uri = UriComponentsBuilder.fromUri(baseUrl).pathSegment("files", "root")
                 .queryParam("fields", "id").queryParam("supportsAllDrives", "true")
                 .encode().build().toUri();
@@ -91,8 +83,12 @@ public class GoogleDriveBrowser implements FileBrowser {
     }
 
     @Override
-    public FilePage listChildren(ProviderAccessToken token, String folderId, String pageToken, int pageSize) {
-        requireFileId(folderId);
+    public FilePage listChildren(ProviderAccessToken token, AccountRoot root, String directory, String providerCursor,
+            int pageSize) {
+        String folderId = directory == null ? root.rootFolderId() : directory;
+        if (!StorageProvider.GOOGLE_DRIVE.isValidDirectory(folderId)) {
+            throw new IllegalArgumentException("Invalid Drive folder id");
+        }
         URI uri = UriComponentsBuilder.fromUri(baseUrl).pathSegment("files")
                 .queryParam("q", "{q}")
                 .queryParam("pageSize", pageSize)
@@ -102,11 +98,11 @@ public class GoogleDriveBrowser implements FileBrowser {
                 .queryParam("corpora", "user")
                 .queryParam("supportsAllDrives", "true")
                 .queryParam("includeItemsFromAllDrives", "false")
-                .queryParamIfPresent("pageToken", java.util.Optional.ofNullable(pageToken).map(t -> "{pageToken}"))
+                .queryParamIfPresent("pageToken", Optional.ofNullable(providerCursor).map(t -> "{pageToken}"))
                 .encode()
-                .buildAndExpand(pageToken == null
+                .buildAndExpand(providerCursor == null
                         ? Map.of("q", childrenQuery(folderId), "fields", LIST_FIELDS)
-                        : Map.of("q", childrenQuery(folderId), "fields", LIST_FIELDS, "pageToken", pageToken))
+                        : Map.of("q", childrenQuery(folderId), "fields", LIST_FIELDS, "pageToken", providerCursor))
                 .toUri();
         JsonNode body = call(token, uri);
         JsonNode files = body.get("files");
@@ -137,8 +133,10 @@ public class GoogleDriveBrowser implements FileBrowser {
     }
 
     @Override
-    public ProviderFile getFile(ProviderAccessToken token, String fileId) {
-        requireFileId(fileId);
+    public ProviderFile getFile(ProviderAccessToken token, AccountRoot root, String fileId) {
+        if (!StorageProvider.GOOGLE_DRIVE.isValidFileId(fileId)) {
+            throw new IllegalArgumentException("Invalid Drive file id");
+        }
         URI uri = UriComponentsBuilder.fromUri(baseUrl).pathSegment("files", "{id}")
                 .queryParam("fields", "{fields}")
                 .queryParam("supportsAllDrives", "true")
@@ -192,53 +190,28 @@ public class GoogleDriveBrowser implements FileBrowser {
         String targetMime = kind == FileKind.SHORTCUT ? text(shortcut, "targetMimeType") : null;
         String name = text(node, "name");
         return new ProviderFile(id, name == null ? "" : name, kind, mimeType, size, parseInstant(text(node, "modifiedTime")),
-                canDownload, StorageProvider.GOOGLE_DRIVE.isValidFileId(targetId) ? targetId : null, targetMime);
+                canDownload, kind == FileKind.FOLDER ? id : null, null, null, null,
+                StorageProvider.GOOGLE_DRIVE.isValidFileId(targetId) ? targetId : null, targetMime);
     }
 
     private JsonNode call(ProviderAccessToken token, URI uri) {
-        int attempt = 0;
-        while (true) {
-            ProviderException failure;
-            boolean retryable;
-            try {
-                Response response = http.get().uri(uri)
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token.value())
-                        .accept(MediaType.APPLICATION_JSON)
-                        .exchange((request, res) -> new Response(res.getStatusCode().value(),
-                                res.getHeaders().getFirst(HttpHeaders.RETRY_AFTER), res.getBody().readAllBytes()), true);
-                if (response.status() >= 200 && response.status() < 300) {
-                    return parse(response.body());
-                }
-                failure = classify(response);
-                retryable = isRetryable(response, failure);
-            } catch (RestClientException e) {
-                failure = new ProviderException(Category.UNAVAILABLE, "Google Drive could not be reached");
-                retryable = true;
-            }
-            if (!retryable || attempt >= properties.maxRetries()) {
-                throw failure;
-            }
-            Duration wait = backoff(attempt, failure.retryAfter());
-            if (wait == null) {
-                throw failure; // Retry-After longer than we are willing to block a request for.
-            }
-            try {
-                sleeper.sleep(wait);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw failure;
-            }
-            attempt++;
-        }
-    }
-
-    record Response(int status, String retryAfter, byte[] body) {
+        Response response = transport.execute(() -> http.get().uri(uri)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token.value())
+                .accept(MediaType.APPLICATION_JSON)
+                .exchange((request, res) -> new Response(res.getStatusCode().value(),
+                        res.getHeaders().getFirst(HttpHeaders.RETRY_AFTER), res.getBody().readAllBytes()), true), this);
+        return parse(response.body());
     }
 
     /** Distinguishes authentication, scope, permission, rate-limit and quota failures. */
-    static ProviderException classify(Response response) {
+    @Override
+    public ProviderException classify(Response response) {
+        return classifyResponse(response);
+    }
+
+    static ProviderException classifyResponse(Response response) {
         int status = response.status();
-        Duration retryAfter = parseRetryAfter(response.retryAfter());
+        Duration retryAfter = ProviderHttp.parseRetryAfter(response.retryAfter());
         Set<String> reasons = reasons(response.body());
         if (status == 401) {
             return new ProviderException(Category.AUTHENTICATION, "Drive rejected the access token");
@@ -267,49 +240,20 @@ public class GoogleDriveBrowser implements FileBrowser {
         return new ProviderException(Category.INVALID_RESPONSE, "Drive returned an unexpected status " + status);
     }
 
-    private static boolean isRetryable(Response response, ProviderException failure) {
+    /** Per-minute rate limits and 5xx clear quickly; daily quota exhaustion does not. */
+    @Override
+    public boolean retryable(Response response, ProviderException failure) {
         if (failure.category() == Category.UNAVAILABLE) {
             return true;
         }
-        // Per-minute rate limits clear quickly; daily quota exhaustion does not.
         return failure.category() == Category.RATE_LIMITED
                 && (response.status() == 429 || reasons(response.body()).stream().anyMatch(RATE_LIMIT_REASONS::contains));
-    }
-
-    /** Exponential backoff with jitter, or the server's Retry-After; null if that is too long. */
-    private Duration backoff(int attempt, Duration retryAfter) {
-        Duration max = properties.maxRetryDelay();
-        if (retryAfter != null) {
-            return retryAfter.compareTo(max) <= 0 ? retryAfter : null;
-        }
-        long base = properties.retryBaseDelay().toMillis() << attempt;
-        long jitter = ThreadLocalRandom.current().nextLong(Math.max(1, properties.retryBaseDelay().toMillis()));
-        return Duration.ofMillis(Math.min(base + jitter, max.toMillis()));
-    }
-
-    static Duration parseRetryAfter(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            long seconds = Long.parseLong(value.trim());
-            return seconds < 0 ? null : Duration.ofSeconds(seconds);
-        } catch (NumberFormatException e) {
-            try {
-                Instant at = java.time.ZonedDateTime.parse(value.trim(), java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
-                        .toInstant();
-                Duration d = Duration.between(Instant.now(), at);
-                return d.isNegative() ? Duration.ZERO : d;
-            } catch (DateTimeParseException ignored) {
-                return null;
-            }
-        }
     }
 
     private static Set<String> reasons(byte[] body) {
         try {
             JsonNode error = JSON.readTree(body).path("error");
-            Set<String> reasons = new java.util.HashSet<>();
+            Set<String> reasons = new HashSet<>();
             for (JsonNode e : error.path("errors")) {
                 String reason = text(e, "reason");
                 if (reason != null) {
@@ -337,12 +281,6 @@ public class GoogleDriveBrowser implements FileBrowser {
             return node;
         } catch (JacksonException e) {
             throw new ProviderException(Category.INVALID_RESPONSE, "Drive response was not valid JSON");
-        }
-    }
-
-    private static void requireFileId(String id) {
-        if (!StorageProvider.GOOGLE_DRIVE.isValidFileId(id)) {
-            throw new IllegalArgumentException("Invalid Drive file id");
         }
     }
 

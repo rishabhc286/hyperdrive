@@ -1,6 +1,13 @@
 import { useState, type ReactNode } from 'react';
-import type { ConnectedAccount, StorageApi, StorageError } from '../../shared/storage';
-import { accountLabel, connectionFailureMessage, formatDate, storageErrorMessage } from './storage-format';
+import type { ConnectedAccount, StorageApi, StorageError, StorageProvider } from '../../shared/storage';
+import { ProviderIcon } from './ProviderIcon';
+import {
+  accountLabel,
+  connectionFailureMessage,
+  formatDate,
+  providerName,
+  storageErrorMessage
+} from './storage-format';
 import type { AccountsState, ConnectionFlow } from './useStorage';
 
 export interface CloudAccountsProps {
@@ -8,21 +15,26 @@ export interface CloudAccountsProps {
   readonly accounts: AccountsState;
   readonly onReloadAccounts: () => void;
   readonly connection: ConnectionFlow;
-  readonly onConnect: () => void;
+  /** null until the backend has said which providers it can connect. */
+  readonly availability: ReadonlyMap<StorageProvider, boolean> | null;
+  readonly onConnect: (provider: StorageProvider) => void;
   readonly onCancelConnection: () => void;
   readonly onDismissConnection: () => void;
 }
 
+const PROVIDERS: readonly StorageProvider[] = ['GOOGLE_DRIVE', 'DROPBOX'];
+
 export function CloudAccounts(props: CloudAccountsProps) {
-  const { connection } = props;
+  const { connection, availability } = props;
   const busy = connection.phase === 'starting' || connection.phase === 'waiting' || connection.phase === 'cancelling';
 
   return (
     <section aria-labelledby="accounts-title">
       <h1 id="accounts-title">Cloud Accounts</h1>
       <p className="muted">
-        Connecting a storage account is separate from signing in to HyperDrive. You can connect any Google
-        account’s Drive, including one different from the account you signed in with. Access is read-only.
+        Connecting a storage account is separate from signing in to HyperDrive. You can connect several Google Drive
+        and Dropbox accounts, including ones that use a different email from your HyperDrive sign-in. Access is
+        read-only.
       </p>
 
       <ConnectionNotice {...props} />
@@ -32,34 +44,45 @@ export function CloudAccounts(props: CloudAccountsProps) {
 
       <h2 className="subheading">Add an account</h2>
       <ul className="providers" aria-label="Cloud storage providers">
-        <li className="provider">
-          <span className="provider-name">Google Drive</span>
-          <button type="button" className="button" onClick={props.onConnect} disabled={busy}>
-            Connect Google Drive
-          </button>
-        </li>
-        <li className="provider">
-          <span className="provider-name">Dropbox</span>
-          <span className="muted small" id="dropbox-unavailable-note">
-            Not available yet; Dropbox support arrives in a later development batch.
-          </span>
-          <button type="button" className="button" disabled aria-describedby="dropbox-unavailable-note">
-            Connect Dropbox
-          </button>
-        </li>
+        {PROVIDERS.map((provider) => {
+          const unavailable = availability?.get(provider) === false;
+          const noteId = `${provider.toLowerCase()}-unavailable-note`;
+          return (
+            <li className="provider" key={provider}>
+              <span className="provider-name">
+                <ProviderIcon provider={provider} /> {providerName(provider)}
+              </span>
+              {unavailable && (
+                <span className="muted small" id={noteId}>
+                  Not configured on this HyperDrive server.
+                </span>
+              )}
+              <button
+                type="button"
+                className="button"
+                onClick={() => props.onConnect(provider)}
+                disabled={busy || unavailable}
+                aria-describedby={unavailable ? noteId : undefined}
+              >
+                Connect {providerName(provider)}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
 }
 
 function ConnectionNotice({ connection, onCancelConnection, onDismissConnection, onConnect }: CloudAccountsProps) {
+  if (connection.phase === 'idle') return null;
+  const name = providerName(connection.provider);
+  const retry = () => onConnect(connection.provider);
   switch (connection.phase) {
-    case 'idle':
-      return null;
     case 'starting':
       return (
         <div className="notice notice-info" role="status">
-          Opening your browser…
+          Opening your browser for {name}…
         </div>
       );
     case 'waiting':
@@ -69,7 +92,7 @@ function ConnectionNotice({ connection, onCancelConnection, onDismissConnection,
           <p>
             {connection.phase === 'cancelling'
               ? 'Cancelling…'
-              : 'Finish connecting Google Drive in your browser. Choose the Google account whose Drive you want to use, then allow read-only access.'}
+              : `Finish connecting ${name} in your browser. Sign in to the ${name} account you want to use, then allow read-only access.`}
           </p>
           <div className="actions">
             <button
@@ -86,13 +109,15 @@ function ConnectionNotice({ connection, onCancelConnection, onDismissConnection,
     case 'completed':
       return (
         <Dismissable kind="info" onDismiss={onDismissConnection}>
-          {connection.reconnected ? 'Google Drive reconnected.' : 'Google Drive connected.'}
+          {connection.reconnected
+            ? `${name} reconnected. This account was already connected, so its existing connection was updated.`
+            : `${name} connected.`}
         </Dismissable>
       );
     case 'failed':
       return (
-        <Dismissable kind="warn" onDismiss={onDismissConnection} onRetry={onConnect}>
-          {connectionFailureMessage(connection.errorCode)}
+        <Dismissable kind="warn" onDismiss={onDismissConnection} onRetry={retry}>
+          {connectionFailureMessage(connection.provider, connection.errorCode)}
         </Dismissable>
       );
     case 'cancelled':
@@ -103,7 +128,7 @@ function ConnectionNotice({ connection, onCancelConnection, onDismissConnection,
       );
     case 'expired':
       return (
-        <Dismissable kind="warn" onDismiss={onDismissConnection} onRetry={onConnect}>
+        <Dismissable kind="warn" onDismiss={onDismissConnection} onRetry={retry}>
           The connection attempt timed out. Nothing was connected.
         </Dismissable>
       );
@@ -117,7 +142,7 @@ function ConnectionNotice({ connection, onCancelConnection, onDismissConnection,
       );
     case 'start-failed':
       return (
-        <Dismissable kind="warn" onDismiss={onDismissConnection} onRetry={onConnect}>
+        <Dismissable kind="warn" onDismiss={onDismissConnection} onRetry={retry}>
           {storageErrorMessage(connection.error)}
         </Dismissable>
       );
@@ -152,6 +177,12 @@ function Dismissable({
   );
 }
 
+function revokeHint(provider: StorageProvider): string {
+  return provider === 'DROPBOX'
+    ? 'To also remove HyperDrive’s access in Dropbox, use Dropbox Settings → Connected apps.'
+    : 'To also remove HyperDrive from your Google Account, use Google Account → Security → Your connections to third-party apps.';
+}
+
 function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: CloudAccountsProps & { busy: boolean }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -181,7 +212,9 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
   const disconnect = async (account: ConnectedAccount) => {
     setRemoving(account.id);
     setError(null);
-    const result = await storage.disconnectAccount({ accountId: account.id }).catch(() => ({ ok: false as const, error: 'unknown' as const }));
+    const result = await storage
+      .disconnectAccount({ accountId: account.id })
+      .catch(() => ({ ok: false as const, error: 'unknown' as const }));
     setRemoving(null);
     setConfirming(null);
     if (!result.ok && result.error !== 'not-found') setError(result.error);
@@ -196,64 +229,77 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
         </div>
       )}
       <ul className="accounts" aria-label="Connected accounts">
-        {accounts.accounts.map((account) => (
-          <li key={account.id} className="account-row">
-            <div className="account-info">
-              <span className="provider-name">Google Drive</span>
-              <span>{accountLabel(account)}</span>
-              {account.displayName && account.email && <span className="muted small">{account.displayName}</span>}
-              <span className="muted small">Connected {formatDate(account.connectedAt)} · read-only</span>
-              {account.status === 'NEEDS_RECONNECT' ? (
-                <span className="badge badge-warn">Needs reconnect</span>
+        {accounts.accounts.map((account) => {
+          const name = providerName(account.provider);
+          const label = accountLabel(account);
+          return (
+            <li key={account.id} className="account-row">
+              <div className="account-info">
+                <span className="provider-name">
+                  <ProviderIcon provider={account.provider} /> {name}
+                  {account.rootType === 'TEAM' ? ' (team space)' : ''}
+                </span>
+                <span>{label}</span>
+                {account.displayName && account.email && <span className="muted small">{account.displayName}</span>}
+                <span className="muted small">Connected {formatDate(account.connectedAt)} · read-only</span>
+                {account.status === 'NEEDS_RECONNECT' ? (
+                  <span className="badge badge-warn">Needs reconnect</span>
+                ) : (
+                  <span className="badge badge-ok">Connected</span>
+                )}
+              </div>
+              {confirming === account.id ? (
+                <div className="confirm" role="group" aria-label={`Confirm disconnecting ${name} ${label}`}>
+                  <p className="small">
+                    Disconnect {name} {label}? HyperDrive deletes its stored access for this account only. Your files
+                    stay in {name}, your other accounts stay connected, and you stay signed in to HyperDrive.{' '}
+                    {revokeHint(account.provider)}
+                  </p>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="button button-small button-danger"
+                      onClick={() => void disconnect(account)}
+                      disabled={removing === account.id}
+                    >
+                      {removing === account.id ? 'Disconnecting…' : 'Disconnect'}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-secondary button-small"
+                      onClick={() => setConfirming(null)}
+                      disabled={removing === account.id}
+                    >
+                      Keep connected
+                    </button>
+                  </div>
+                </div>
               ) : (
-                <span className="badge badge-ok">Connected</span>
-              )}
-            </div>
-            {confirming === account.id ? (
-              <div className="confirm" role="group" aria-label={`Confirm disconnecting ${accountLabel(account)}`}>
-                <p className="small">
-                  Disconnect {accountLabel(account)}? HyperDrive deletes its stored access for this account. Your
-                  files stay in Google Drive and you stay signed in to HyperDrive. To also remove HyperDrive from
-                  your Google Account, use Google Account → Security → Your connections to third-party apps.
-                </p>
                 <div className="actions">
-                  <button
-                    type="button"
-                    className="button button-small button-danger"
-                    onClick={() => void disconnect(account)}
-                    disabled={removing === account.id}
-                  >
-                    {removing === account.id ? 'Disconnecting…' : 'Disconnect'}
-                  </button>
+                  {account.status === 'NEEDS_RECONNECT' && (
+                    <button
+                      type="button"
+                      className="button button-small"
+                      onClick={() => onConnect(account.provider)}
+                      disabled={busy}
+                      aria-label={`Reconnect ${name} ${label}`}
+                    >
+                      Reconnect
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="button button-secondary button-small"
-                    onClick={() => setConfirming(null)}
-                    disabled={removing === account.id}
+                    onClick={() => setConfirming(account.id)}
+                    aria-label={`Disconnect ${name} ${label}`}
                   >
-                    Keep connected
+                    Disconnect…
                   </button>
                 </div>
-              </div>
-            ) : (
-              <div className="actions">
-                {account.status === 'NEEDS_RECONNECT' && (
-                  <button type="button" className="button button-small" onClick={onConnect} disabled={busy}>
-                    Reconnect
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="button button-secondary button-small"
-                  onClick={() => setConfirming(account.id)}
-                  aria-label={`Disconnect ${accountLabel(account)}`}
-                >
-                  Disconnect…
-                </button>
-              </div>
-            )}
-          </li>
-        ))}
+              )}
+            </li>
+          );
+        })}
       </ul>
     </>
   );
