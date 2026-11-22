@@ -1,5 +1,84 @@
 # Progress
 
+## Batch 7: encrypted local 4 MiB chunk cache (2026-11-22)
+
+### Foundation check before starting
+
+- Repository at `15aa1cb`, clean. Baselines: agent 51 tests and desktop 226 passed; backend 218
+  (unchanged from Batch 6, re-run at the end).
+- **Checkpoint verified against code:**
+  - Dropbox reads are request-pinned with `rev:`. However, `checkRevision` accepts a response
+    **without** `Dropbox-API-Result` (revision `null`), so cache admission additionally requires
+    the header's `rev` to match.
+  - Google reads are unpinned.
+
+### Completed
+
+- **Design first:** [docs/cache.md](cache.md) and [ADR 0003](adr/0003-cache-consistency-and-key-lifecycle.md).
+  The Dropbox `rev` semantics were re-checked in `files.stone` (dropbox-api-spec).
+- **Agent** (`read/CacheCrypto`, `ChunkStore`, `ChunkCache`, `RangeReader`):
+  - Aligned 4 MiB chunks (at most two per read); AES-256-GCM with a random nonce and the chunk
+    identity in the authenticated data; HMAC-tag file names.
+  - The file system is the index, with atomic temp→rename publication and startup reconciliation.
+  - Budget with reservations, LRU eviction that skips pinned entries, deduplicated shared fetches
+    with per-waiter cancellation, generation counters against late publication, and purge per
+    user or account.
+  - Eligibility: Dropbox `rev:` reads confirmed by `Dropbox-API-Result`. Google always bypasses
+    with `provider_not_version_bound`.
+  - Endpoints: `/local/v1/cache/status`, `/cache/session`, `/cache/session/end`, `/cache/budget`
+    and `/cache/clear`. Read responses carry cache headers.
+  - Capability `chunkCache` is `true`.
+- **Desktop:**
+  - `CacheKeyStore`: a per-user random key wrapped by `safeStorage`, with no plaintext fallback.
+  - `CacheSettings`: the persisted budget, 5 GiB by default.
+  - `CacheCoordinator`: single-flight key hand-off per agent instance, status re-parsing,
+    budget, clear, account purge with retry, and logout purge plus key deletion.
+  - Logout purge runs only for `signed-out` and `session-expired`, never for transient phases.
+  - IPC `cache.getStatus` / `setBudget` / `clear` with validation.
+  - UI: real metrics on Performance; size limit and confirmed Clear cache in Settings; Verify file
+    read shows hit, miss or bypass, the reason, and bytes fetched or served from cache.
+
+### Checks executed (Windows 11, Docker, JDK 25.0.5, Node 24.19.0)
+
+- Backend `mvnw verify`: 218 tests, 0 failures (regression only; no backend changes).
+- Agent `mvnw verify`: 82 tests, 0 failures, including 25 `ChunkCacheTest` and 6 `CacheApiTest`
+  tests against local mock providers.
+- Desktop: typecheck, lint and build exit 0. Vitest: 247 tests, 0 failures, including the real-jar
+  smoke test of the cache endpoints.
+- **Mutation checks:** each of these was caught by a failing test:
+  - removing the generation check;
+  - evicting pinned entries;
+  - dropping the chunk identity from the authenticated data;
+  - skipping the revision confirmation;
+  - cancelling a shared fetch when the first waiter leaves.
+
+### Defects found during this batch and fixed
+
+- A logout racing a cached read would have thrown an internal error; it now falls back to the
+  uncached path (`cache_key_unavailable`), with a test.
+- The first wiring purged the cache on **any** non-signed-in auth phase. That would have wiped the
+  cache and key during a transient "checking" or "backend unavailable" phase. Purge now happens
+  only on a real sign-out or session expiry (`endsCacheSession`, tested).
+
+### Requires manual verification (not executed)
+
+- Live Dropbox and Google reads, and with them the cache. See the checklist in [cache.md](cache.md).
+  The key open question is whether Dropbox returns `Dropbox-API-Result` on ranged downloads; if
+  not, nothing is cached and the diagnostic says "not stored".
+- DPAPI-backed key protection on a real Windows profile. Tests use a stand-in for `safeStorage`.
+
+### Known limitations
+
+- **Google Drive content is never cached.**
+- **Hits don't contact the provider**, so access revoked moments ago isn't detected until
+  disconnect or logout.
+- **Deletion isn't secure erasure.**
+- **Restart behavior:** counters are process-lifetime, and LRU order after a restart is
+  approximate (file modification times).
+- **Amplification:** an eligible miss fetches whole chunks, up to 8 MiB for one unaligned 4 MiB
+  read.
+- **Scope:** one active cache user at a time. Other users' leftovers are deleted at session start.
+
 ## Batch 6: provider-read delegation and bounded range reads (2026-11-22)
 
 ### Foundation check before starting

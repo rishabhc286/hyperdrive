@@ -1,3 +1,4 @@
+import type { CacheBypassReason, CacheNotAdmittedReason, CacheOutcome } from './cache';
 /**
  * Cloud-storage types shared by main, preload and renderer. Nothing here carries a provider or
  * HyperDrive token: the renderer only sees account metadata, connection status and file metadata.
@@ -147,6 +148,14 @@ export type ReadDiagnostic =
       readonly sha256: string;
       /** True only for Dropbox reads pinned to the listed revision. */
       readonly revisionPinned: boolean;
+      /** What the local chunk cache did for this read (Batch 7). */
+      readonly cache: CacheOutcome;
+      readonly cacheBypassReason: CacheBypassReason | null;
+      readonly cacheNotAdmittedReason: CacheNotAdmittedReason | null;
+      /** Bytes the agent actually received from the provider (whole 4 MiB chunks on cached misses). */
+      readonly providerBytesFetched: number;
+      /** Requested bytes answered from encrypted cached chunks. */
+      readonly bytesFromCache: number;
     }
   | { readonly ok: false; readonly error: ReadError };
 

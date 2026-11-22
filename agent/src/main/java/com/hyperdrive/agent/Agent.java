@@ -16,6 +16,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import com.hyperdrive.agent.read.ChunkCache;
 import com.hyperdrive.agent.read.CredentialRegistry;
 import com.hyperdrive.agent.read.ProviderEndpoints;
 import com.hyperdrive.agent.read.ProviderReader;
@@ -65,6 +66,7 @@ public final class Agent {
     private final Duration providerRequestTimeout;
     private final CredentialRegistry credentials;
     private ReadService reads;
+    private ChunkCache cache;
 
     public Agent(InputStream stdin, PrintStream stdout, PrintStream stderr, Clock clock, Duration bootstrapTimeout) {
         this(stdin, stdout, stderr, clock, bootstrapTimeout, ProviderEndpoints.PRODUCTION, d -> Thread.sleep(d),
@@ -123,14 +125,22 @@ public final class Agent {
         try (lock) {
             startedAt = clock.instant();
             try {
-                reads = new ReadService(credentials, new ProviderReader(endpoints, Duration.ofSeconds(5),
-                        providerRequestTimeout, sleeper));
+                ProviderReader provider = new ProviderReader(endpoints, Duration.ofSeconds(5), providerRequestTimeout,
+                        sleeper);
+                // Encrypted chunk cache under the agent's own data directory (inert until a key arrives).
+                cache = new ChunkCache(bootstrap.dataDir().resolve("cache"), provider, log::info);
+                reads = new ReadService(credentials, provider, cache);
                 server = LocalApiServer.start(bootstrap.secret(),
                         Map.of("/local/v1/health", () -> new LocalApiServer.Response.Json(200, health()),
-                                "/local/v1/status", () -> new LocalApiServer.Response.Json(200, status())),
+                                "/local/v1/status", () -> new LocalApiServer.Response.Json(200, status()),
+                                "/local/v1/cache/status", () -> new LocalApiServer.Response.Json(200, cacheStatus())),
                         Map.of("/local/v1/credentials", this::installCredential,
                                 "/local/v1/credentials/clear", this::clearCredentials,
-                                "/local/v1/reads", this::read),
+                                "/local/v1/reads", this::read,
+                                "/local/v1/cache/session", this::cacheSession,
+                                "/local/v1/cache/session/end", this::cacheSessionEnd,
+                                "/local/v1/cache/budget", this::cacheBudget,
+                                "/local/v1/cache/clear", this::cacheClear),
                         log);
             } catch (IOException e) {
                 log.error("Local API could not bind to 127.0.0.1: " + e.getClass().getSimpleName());
@@ -153,6 +163,9 @@ public final class Agent {
             awaitShutdown();
             log.info("Agent shutting down (" + shutdownReason + ")");
             int cleared = credentials.clear(null); // also cancels in-flight reads
+            if (cache != null) {
+                cache.shutdown(); // drops the in-memory key; encrypted files stay for the next session
+            }
             if (cleared > 0) {
                 log.info("Cleared " + cleared + " delegated credential(s) on shutdown");
             }
@@ -268,7 +281,7 @@ public final class Agent {
         // Batch 6: bounded provider range reads with delegated access tokens (no cache, no drive).
         capabilities.put("providerReads", true);
         capabilities.put("rangeReads", true);
-        capabilities.put("chunkCache", false);
+        capabilities.put("chunkCache", true);
         capabilities.put("virtualDrive", false);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("protocolVersion", Bootstrap.PROTOCOL_VERSION);
@@ -351,6 +364,15 @@ public final class Agent {
             if (result.revision() != null) {
                 headers.put("X-HyperDrive-Revision", result.revision());
             }
+            headers.put("X-HyperDrive-Cache", result.cache().name().toLowerCase(java.util.Locale.ROOT));
+            if (result.bypassReason() != null) {
+                headers.put("X-HyperDrive-Cache-Bypass", result.bypassReason());
+            }
+            if (result.notAdmittedReason() != null) {
+                headers.put("X-HyperDrive-Cache-Not-Admitted", result.notAdmittedReason());
+            }
+            headers.put("X-HyperDrive-Provider-Bytes", Long.toString(result.providerBytes()));
+            headers.put("X-HyperDrive-Cache-Bytes", Long.toString(result.cacheBytes()));
             return new LocalApiServer.Response.Binary(200, result.data(), result.length(), headers);
         } catch (ReadException e) {
             log.info("Read failed: " + e.code());
@@ -359,6 +381,104 @@ public final class Agent {
                 out.put("retryAfterSeconds", e.retryAfter().toSeconds());
             }
             return new LocalApiServer.Response.Json(e.httpStatus(), out);
+        }
+    }
+
+    // --- Chunk cache (Batch 7) -----------------------------------------------------------------
+
+    private Map<String, Object> cacheStatus() {
+        ChunkCache.Status st = cache.status();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("enabled", st.enabled());
+        out.put("disabledReason", st.disabledReason());
+        out.put("budgetBytes", st.store().budget());
+        out.put("encryptedBytesOnDisk", st.store().encryptedBytes());
+        out.put("tempBytes", st.store().tempBytes());
+        out.put("entryCount", st.store().entries());
+        out.put("overBudgetBytes", st.store().overBudget());
+        out.put("startupRemovedFiles", st.store().startupRemoved());
+        out.put("counters", st.counters());
+        out.put("bypasses", st.bypasses());
+        var last = st.store().lastCleanup();
+        out.put("lastCleanup", last == null ? null
+                : Map.of("scope", last.scope(), "removed", last.removed(), "failed", last.failed()));
+        return out;
+    }
+
+    private static Map<String, Object> purgeJson(com.hyperdrive.agent.read.ChunkStore.PurgeResult p) {
+        return Map.of("removed", p.removed(), "failed", p.failed());
+    }
+
+    private LocalApiServer.Response cacheSession(JsonNode body) {
+        if (!onlyFields(body, java.util.Set.of("userId", "key", "fresh", "budgetBytes")) || !body.path("fresh").isBoolean()
+                || !body.path("budgetBytes").isIntegralNumber() || !body.path("budgetBytes").canConvertToLong()) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+        byte[] key = null;
+        try {
+            UUID userId = UUID.fromString(body.path("userId").asString(""));
+            String encoded = body.path("key").asString("");
+            if (!encoded.matches("^[A-Za-z0-9+/]{43}=$")) {
+                throw new IllegalArgumentException("key");
+            }
+            key = java.util.Base64.getDecoder().decode(encoded);
+            cache.setBudget(body.path("budgetBytes").asLong());
+            var others = cache.startSession(userId, key, body.path("fresh").asBoolean());
+            log.info("Cache session started" + (others.removed() + others.failed() > 0
+                    ? " (removed " + others.removed() + " leftover file(s), " + others.failed() + " failed)" : ""));
+            return new LocalApiServer.Response.Json(200, cacheStatus());
+        } catch (ReadException e) {
+            return new LocalApiServer.Response.Json(e.httpStatus(), LocalApiServer.error(e.code()));
+        } catch (IllegalArgumentException e) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        } finally {
+            if (key != null) {
+                java.util.Arrays.fill(key, (byte) 0); // best effort; derived keys live in the session
+            }
+        }
+    }
+
+    private LocalApiServer.Response cacheSessionEnd(JsonNode body) {
+        if (!onlyFields(body, java.util.Set.of("userId"))) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+        try {
+            var result = cache.endSession(UUID.fromString(body.path("userId").asString("")));
+            log.info("Cache session ended: removed " + result.removed() + " file(s), " + result.failed() + " failed");
+            return new LocalApiServer.Response.Json(200, purgeJson(result));
+        } catch (IllegalArgumentException e) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+    }
+
+    private LocalApiServer.Response cacheBudget(JsonNode body) {
+        if (!onlyFields(body, java.util.Set.of("budgetBytes")) || !body.path("budgetBytes").isIntegralNumber()
+                || !body.path("budgetBytes").canConvertToLong()) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+        try {
+            cache.setBudget(body.path("budgetBytes").asLong());
+            return new LocalApiServer.Response.Json(200, cacheStatus());
+        } catch (ReadException e) {
+            return new LocalApiServer.Response.Json(e.httpStatus(), LocalApiServer.error(e.code()));
+        }
+    }
+
+    private LocalApiServer.Response cacheClear(JsonNode body) {
+        if (!onlyFields(body, java.util.Set.of("accountId"))) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
+        }
+        try {
+            JsonNode id = body.get("accountId");
+            UUID accountId = id == null || id.isNull() ? null : UUID.fromString(id.asString(""));
+            var result = cache.clear(accountId);
+            log.info("Cache cleared" + (accountId == null ? "" : " for account " + accountId) + ": removed "
+                    + result.removed() + " file(s), " + result.failed() + " failed");
+            return new LocalApiServer.Response.Json(200, purgeJson(result));
+        } catch (ReadException e) {
+            return new LocalApiServer.Response.Json(e.httpStatus(), LocalApiServer.error(e.code()));
+        } catch (IllegalArgumentException e) {
+            return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
         }
     }
 

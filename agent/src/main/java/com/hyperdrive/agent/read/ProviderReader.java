@@ -40,7 +40,7 @@ import tools.jackson.databind.json.JsonMapper;
  *       {@code Range}; a pinned {@code rev:} read returns exactly that revision.</li>
  * </ul>
  */
-public final class ProviderReader {
+public final class ProviderReader implements RangeReader {
 
     private static final Pattern CONTENT_RANGE = Pattern.compile("^bytes (\\d+)-(\\d+)/(\\d+)$");
     private static final Pattern UNSATISFIED = Pattern.compile("^bytes \\*/(\\d+)$");
@@ -76,7 +76,8 @@ public final class ProviderReader {
      * Reads {@code [start, endInclusive]} of a file whose expected total size is {@code expectedSize}.
      * The caller has already clamped the range to the expected size.
      */
-    Result read(Credential credential, String fileId, long start, long endInclusive, long expectedSize,
+    @Override
+    public Result read(Credential credential, String fileId, long start, long endInclusive, long expectedSize,
             String expectedRevision, CancelToken cancel) throws ReadException {
         int wanted = Math.toIntExact(endInclusive - start + 1);
         ReadException last = null;

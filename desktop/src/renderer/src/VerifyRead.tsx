@@ -2,6 +2,24 @@ import { useRef, useState } from 'react';
 import type { ConnectedAccount, ReadDiagnostic, ReadError, StorageApi, StorageFile } from '../../shared/storage';
 import { MAX_READ_BYTES } from '../../shared/storage';
 import { formatSize, providerName } from './storage-format';
+import { BYPASS_LABELS } from './CachePanels';
+import type { CacheNotAdmittedReason, CacheOutcome } from '../../shared/cache';
+
+const OUTCOME_LABELS: Record<CacheOutcome, string> = {
+  hit: 'Hit: served from encrypted cached chunks, no provider download',
+  miss: 'Miss: whole 4 MiB chunk(s) downloaded',
+  partial: 'Partial: one chunk from cache, one downloaded',
+  bypass: 'Bypassed: read directly, nothing cached',
+  none: 'Not used (nothing to read)'
+};
+
+const NOT_ADMITTED_LABELS: Record<CacheNotAdmittedReason, string> = {
+  revision_unconfirmed: 'not stored: the provider didn’t confirm the file version',
+  cache_full: 'not stored: the cache is full and nothing could be evicted',
+  cache_invalidated: 'not stored: the cache was cleared while reading',
+  cache_error: 'not stored: the chunk couldn’t be written',
+  cache_disabled: 'not stored: the cache is off'
+};
 
 /** Whether the "Verify file read" diagnostic may be offered for this file. */
 export function canVerifyRead(file: StorageFile, account: ConnectedAccount): boolean {
@@ -82,8 +100,9 @@ export function VerifyRead({
       <h2 id="verify-read-title">Verify file read</h2>
       <p className="muted small">
         Reads one byte range of “{file.name}” ({formatSize(file.sizeBytes)}) from {providerName(account.provider)} through the
-        local agent and shows a SHA-256 digest. The bytes aren’t shown, saved or cached. This is a diagnostic, not opening or
-        downloading the file.
+        local agent and shows a SHA-256 digest. The bytes aren’t shown here. When the version can be confirmed (Dropbox), the
+        agent keeps the 4 MiB chunks it read in its encrypted local cache; Google Drive reads are never cached. This is a
+        diagnostic, not opening or downloading the file.
       </p>
       <div className="verify-read-fields">
         <label className="field-label" htmlFor="verify-offset">
@@ -132,6 +151,16 @@ export function VerifyRead({
                 ? 'Pinned to the listed revision'
                 : 'Not pinned: the provider served its current version (size was checked)'}
             </dd>
+            <dt>Cache</dt>
+            <dd data-testid="verify-cache">
+              {OUTCOME_LABELS[state.result.cache]}
+              {state.result.cacheBypassReason ? ` (${BYPASS_LABELS[state.result.cacheBypassReason]})` : ''}
+              {state.result.cacheNotAdmittedReason ? `; ${NOT_ADMITTED_LABELS[state.result.cacheNotAdmittedReason]}` : ''}
+            </dd>
+            <dt>Bytes fetched from provider</dt>
+            <dd>{state.result.providerBytesFetched.toLocaleString('en-US')}</dd>
+            <dt>Bytes from cache</dt>
+            <dd>{state.result.bytesFromCache.toLocaleString('en-US')}</dd>
           </dl>
         ) : (
           <div className="notice notice-warn" role="alert">

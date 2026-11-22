@@ -59,8 +59,17 @@ process.
 - **Authentication:** a per-launch 256-bit secret sent over stdin, and a validated one-line
   handshake on stdout.
 - **Lifetime:** stdin also serves as the parent-lifetime channel.
-- **Capabilities:** `providerReads` and `rangeReads` are `true` since Batch 6; `chunkCache` and
-  `virtualDrive` are `false`.
+- **Capabilities:** `providerReads` and `rangeReads` are `true` since Batch 6, and `chunkCache`
+  since Batch 7; `virtualDrive` is `false`.
+
+**Chunk cache (Batch 7):**
+- **What's cached:** encrypted 4 MiB chunks under `<agent data dir>\cache\v1\`, for version-bound
+  reads only (Dropbox `rev:` reads that Dropbox confirms). Google Drive reads always bypass the
+  cache.
+- **Key:** owned by the desktop main process (DPAPI-wrapped) and handed to the agent per session.
+- **Limits and cleanup:** a 5 GiB default budget with LRU eviction, purged on clear, disconnect and
+  logout.
+- See [cache.md](cache.md) and [ADR 0003](adr/0003-cache-consistency-and-key-lifecycle.md).
 
 **Provider reads (Batch 6):**
 - The desktop main process obtains a delegated provider access token from the backend and hands
@@ -71,8 +80,8 @@ process.
 - See [ADR 0002](adr/0002-provider-access-token-delegation.md) and
   [local-agent.md](local-agent.md#bounded-read-contract-batch-6).
 
-**Still planned:** the local chunk cache, prefetching and metrics, and the VFS ↔ agent transport
-(an open decision; see [ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md)).
+**Still planned:** prefetching, throughput metrics, and the VFS ↔ agent transport (an open
+decision; see [ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md)).
 
 ### VFS: planned
 
@@ -136,8 +145,10 @@ so Redis is not a runtime dependency.
 
 ## Where file data lives
 
-Actual file chunks (4 MiB = 4,194,304 bytes each) will live **only on the local disk** of the
-user's machine, in the agent's cache directory. They will **not** be stored in Redis or PostgreSQL.
+Cached file chunks (4 MiB = 4,194,304 bytes each) live **only on the local disk** of the user's
+machine, **encrypted**, in the agent's cache directory (`%APPDATA%\HyperDrive\agent\cache\v1\`).
+They are **never** stored in Redis or PostgreSQL, and the backend never sees them
+([cache.md](cache.md)).
 
 ## Sign-in is not storage access
 
@@ -164,7 +175,8 @@ user's machine, in the agent's cache directory. They will **not** be stored in R
 | Shortcuts / links | Shown, not followed | Shown as "Link", not followed |
 | Content download (whole file) | **Not implemented** | **Not implemented** |
 | Bounded range read via agent (≤ 4 MiB, diagnostic) | Implemented: `files.get?alt=media`, ordinary binaries only, **not revision-pinned** | Implemented: `files/download`, ordinary files, **pinned with `rev:`** when the listed revision is known |
-| Streaming / playback / chunk cache | **Not implemented** | **Not implemented** |
+| Persistent encrypted chunk cache | **Bypassed: never cached** (`provider_not_version_bound`) | Implemented for `rev:` reads confirmed by `Dropbox-API-Result`; unconfirmed reads served uncached |
+| Streaming / playback / prefetching | **Not implemented** | **Not implemented** |
 | Writes (upload/edit/rename/move/delete) | **Not implemented** | **Not implemented** |
 | Mounted drive (WinFsp) | **Not implemented** | **Not implemented** |
 | Credentials in the agent | Delegated access token only, memory-only, ≤ 20 min retention | Delegated access token only, memory-only, ≤ 20 min retention |

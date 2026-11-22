@@ -1,8 +1,9 @@
-import type { ReactNode } from 'react';
 import type { AgentStatus } from '../../shared/agent';
 import { AgentStatusCard, agentStateLabel } from './AgentStatusCard';
 import type { SafeUser } from '../../shared/auth';
 import type { StorageApi, StorageProvider } from '../../shared/storage';
+import type { CacheApi } from '../../shared/cache';
+import { CacheMetrics, CacheSettingsPanel } from './CachePanels';
 import { CloudAccounts } from './CloudAccounts';
 import { FilesBrowser } from './FilesBrowser';
 import { accountTitle } from './storage-format';
@@ -26,6 +27,7 @@ interface SectionViewProps {
   readonly onRecheckBackend: () => void;
   readonly onNavigate: (section: SectionId) => void;
   readonly storage: StorageApi;
+  readonly cache: CacheApi;
   readonly accounts: AccountsState;
   readonly onReloadAccounts: () => void;
   readonly connection: ConnectionFlow;
@@ -65,9 +67,9 @@ export function SectionView(props: SectionViewProps) {
         />
       );
     case 'performance':
-      return <Performance />;
+      return <Performance cache={props.cache} />;
     case 'settings':
-      return <Settings user={props.user} backendStatus={props.backendStatus} agentStatus={props.agentStatus} />;
+      return <Settings user={props.user} backendStatus={props.backendStatus} agentStatus={props.agentStatus} cache={props.cache} />;
   }
 }
 
@@ -165,25 +167,15 @@ function backendDescription(status: BackendStatus): string {
   }
 }
 
-function EmptyState({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="empty">
-      <p className="empty-title">{title}</p>
-      <div className="muted">{children}</div>
-    </div>
-  );
-}
-
-function Performance() {
+function Performance({ cache }: { cache: CacheApi }) {
   return (
     <section aria-labelledby="performance-title">
       <h1 id="performance-title">Performance</h1>
-      <EmptyState title="No performance data.">
-        <p>
-          Latency, throughput and cache hit ratio will be measured once file streaming exists. Nothing
-          is measured or recorded in this build.
-        </p>
-      </EmptyState>
+      <p className="muted small">
+        Real counters from the local agent's chunk cache. They come only from “Verify file read” diagnostics today:
+        there is no playback, prefetching or mounted drive yet, and no throughput is measured.
+      </p>
+      <CacheMetrics cache={cache} />
     </section>
   );
 }
@@ -191,18 +183,18 @@ function Performance() {
 function Settings({
   user,
   backendStatus,
-  agentStatus
+  agentStatus,
+  cache
 }: {
   user: SafeUser;
   backendStatus: BackendStatus;
   agentStatus: AgentStatus | null;
+  cache: CacheApi;
 }) {
   return (
     <section aria-labelledby="settings-title">
       <h1 id="settings-title">Settings</h1>
-      <EmptyState title="No settings to change yet.">
-        <p>Cache location, cache size limit and startup behavior will become configurable in later batches.</p>
-      </EmptyState>
+      <CacheSettingsPanel cache={cache} />
       <h2 className="subheading">Account</h2>
       <dl className="facts">
         <dt>Username</dt>

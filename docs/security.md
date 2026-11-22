@@ -170,6 +170,37 @@ Details: [ADR 0002](adr/0002-provider-access-token-delegation.md) and
 - **No zeroization:** Java strings and Node buffers can't be reliably zeroized, and HyperDrive
   doesn't claim zeroization.
 
+## Local chunk cache (Batch 7)
+
+Details: [cache.md](cache.md) and [ADR 0003](adr/0003-cache-consistency-and-key-lifecycle.md).
+
+- **Encryption:** every cached chunk is AES-256-GCM encrypted with a fresh random nonce, using JDK
+  primitives only.
+  - The authenticated data binds the chunk's identity (user, account, provider, file, enforced
+    revision, size, chunk index, through an HMAC tag) and its length.
+  - Tampered, renamed, truncated or wrong-key chunks are rejected and refetched. Plaintext is never
+    written; temp files are ciphertext.
+- **Key:** a random 32-byte key per HyperDrive user, created and persisted only by the Electron main
+  process, wrapped by `safeStorage` (DPAPI). It's sent to the agent over the authenticated
+  loopback channel and kept in memory there. It never reaches preload, React or logs.
+  - **No OS protection → no disk cache.** There's no plaintext fallback.
+- **Names:** file and directory names are HMAC/SHA-256 tags. No file names, emails, provider IDs,
+  tokens or handles appear on disk.
+- **Isolation:** cache keys include user, account and enforced revision, so entries are never
+  shared across users, account connections or versions.
+- **Cleanup:**
+  - Logout or session expiry purges the user's chunks and deletes the wrapped key. Transient
+    phases ("checking", backend unavailable) purge nothing.
+  - Disconnect purges that account's chunks and is retried if unconfirmed. Clear cache needs
+    confirmation.
+  - Generation counters stop in-flight fetches from publishing after any of these.
+- **Not secure erasure:** deleting encrypted files doesn't overwrite disk blocks. Protection rests
+  on encryption and key deletion.
+- **Not an access check:** a cache hit doesn't ask the provider whether access is still allowed. It
+  still needs a signed-in session, a connected account and a valid delegated credential.
+- **Renderer bridge:** IPC exposes only status counters, the budget setter (validated) and clear.
+  It never exposes paths, keys or arbitrary deletion.
+
 ## Desktop
 
 - **Electron hardening (Batch 1):** sandbox, context isolation, no Node in the renderer, strict
@@ -194,6 +225,10 @@ Details: [ADR 0002](adr/0002-provider-access-token-delegation.md) and
 - **Refreshes:** single-flight. The access token is refreshed 30 s before expiry.
 
 ## Known limitations
+
+- **Cached content and revoked access:** a chunk cached before access was revoked at Dropbox can
+  still be served until the account is disconnected, the user logs out or the entry is evicted.
+  Hits don't contact the provider.
 
 - **Delegated tokens outlive local cleanup:** see
   [Provider-read delegation](#provider-read-delegation-batch-6). Malware running as the same

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { SafeUser } from '../../shared/auth';
 import type { AgentApi } from '../../shared/agent';
 import type { StorageApi } from '../../shared/storage';
+import type { CacheApi } from '../../shared/cache';
 import { useAgentStatus } from './useAgentStatus';
 import { BackendIndicator, BrandMark } from './BackendIndicator';
 import { SECTIONS, SectionView, type SectionId } from './sections';
@@ -14,13 +15,14 @@ export interface ShellProps {
   readonly onRecheckBackend: () => void;
   readonly onSignOut: () => void;
   readonly storage: StorageApi;
+  readonly cache: CacheApi;
   readonly agent: AgentApi;
   /** Test hook: connection status polling interval. */
   readonly pollIntervalMs?: number | undefined;
 }
 
 /** The signed-in application layout. */
-export function Shell({ user, backendStatus, onRecheckBackend, onSignOut, storage, agent, pollIntervalMs }: ShellProps) {
+export function Shell({ user, backendStatus, onRecheckBackend, onSignOut, storage, agent, cache, pollIntervalMs }: ShellProps) {
   const agentState = useAgentStatus(agent);
   const [active, setActive] = useState<SectionId>('overview');
   // Owned here so a pending connection keeps polling while the user switches sections.
@@ -72,6 +74,7 @@ export function Shell({ user, backendStatus, onRecheckBackend, onSignOut, storag
             onRecheckBackend={onRecheckBackend}
             onNavigate={setActive}
             storage={storage}
+            cache={cache}
             agentStatus={agentState.status}
             agentRestarting={agentState.restarting}
             onRestartAgent={() => void agentState.restart()}

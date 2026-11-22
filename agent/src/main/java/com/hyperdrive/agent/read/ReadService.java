@@ -37,17 +37,26 @@ public final class ReadService {
             String expectedRevision) {
     }
 
-    public record ReadResult(byte[] data, int length, long offset, boolean eof, boolean revisionPinned, String revision) {
+    /**
+     * One answered read. {@code cache} says what the chunk cache did; {@code bypassReason} is set when the
+     * cache wasn't used at all, {@code notAdmittedReason} when fetched bytes weren't stored.
+     * {@code providerBytes} counts bytes actually received from the provider (whole chunks on eligible
+     * misses), {@code cacheBytes} the requested bytes answered from cached chunks.
+     */
+    public record ReadResult(byte[] data, int length, long offset, boolean eof, boolean revisionPinned, String revision,
+            ChunkCache.Outcome cache, String bypassReason, String notAdmittedReason, long providerBytes, long cacheBytes) {
     }
 
     private final CredentialRegistry credentials;
-    private final ProviderReader reader;
+    private final RangeReader reader;
+    private final ChunkCache cache;
     private final Semaphore global = new Semaphore(MAX_CONCURRENT);
     private final Map<UUID, Semaphore> perAccount = new ConcurrentHashMap<>();
 
-    public ReadService(CredentialRegistry credentials, ProviderReader reader) {
+    public ReadService(CredentialRegistry credentials, RangeReader reader, ChunkCache cache) {
         this.credentials = credentials;
         this.reader = reader;
+        this.cache = cache;
     }
 
     public ReadResult read(ReadRequest request) throws ReadException {
@@ -64,7 +73,8 @@ public final class ReadService {
         validateIds(credential.provider(), request);
 
         if (request.expectedSize() == 0 || request.offset() >= request.expectedSize()) {
-            return new ReadResult(new byte[0], 0, request.offset(), true, false, null);
+            return new ReadResult(new byte[0], 0, request.offset(), true, false, null, ChunkCache.Outcome.NONE, null, null, 0,
+                    0);
         }
         long end = Math.min(requestEnd, request.expectedSize()) - 1;
         boolean eof = end == request.expectedSize() - 1;
@@ -80,9 +90,25 @@ public final class ReadService {
             CancelToken cancel = new CancelToken();
             credential.inFlight.add(cancel);
             try {
+                String bypass = cache == null ? "cache_disabled"
+                        : cache.bypassReason(credential.provider(), request.expectedRevision());
+                ChunkCache.Served served = bypass == null ? cache.read(credential, request.fileId(),
+                        request.expectedRevision(), request.expectedSize(), request.offset(), end + 1, cancel) : null;
+                if (bypass == null && served == null) {
+                    bypass = "cache_key_unavailable"; // the session ended between the check and the read
+                }
+                if (served != null) {
+                    return new ReadResult(served.data(), served.length(), request.offset(), eof, true, served.revision(),
+                            served.outcome(), null, served.notAdmittedReason(), served.providerBytes(), served.cacheBytes());
+                }
+                // Uncached Batch 6 path: exactly the requested range.
                 ProviderReader.Result r = reader.read(credential, request.fileId(), request.offset(), end,
                         request.expectedSize(), request.expectedRevision(), cancel);
-                return new ReadResult(r.data(), r.length(), request.offset(), eof, r.revisionPinned(), r.revision());
+                if (cache != null) {
+                    cache.recordBypass(bypass, r.length(), r.length());
+                }
+                return new ReadResult(r.data(), r.length(), request.offset(), eof, r.revisionPinned(), r.revision(),
+                        ChunkCache.Outcome.BYPASS, bypass, null, r.length(), 0);
             } finally {
                 credential.inFlight.remove(cancel);
                 account.release();

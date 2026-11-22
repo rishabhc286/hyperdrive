@@ -1,3 +1,4 @@
+import { isValidCacheBudget } from '../shared/cache';
 /** Validation of renderer-supplied IPC payloads. Anything unexpected is rejected. */
 import {
   isStorageProvider,
@@ -116,6 +117,14 @@ export function parseVerifyReadPayload(
     throw new InvalidIpcPayloadError(channel);
   }
   return { accountId: uuidField(channel, payload, 'accountId'), fileId, offset, length };
+}
+
+/** Exactly `[{ budgetBytes }]`: 0, or 256 MiB – 1 TiB in whole bytes. */
+export function parseCacheBudgetPayload(channel: string, args: unknown[]): { budgetBytes: number } {
+  const payload = singleObject(channel, args, ['budgetBytes']);
+  const budgetBytes = payload['budgetBytes'];
+  if (!isValidCacheBudget(budgetBytes)) throw new InvalidIpcPayloadError(channel);
+  return { budgetBytes };
 }
 
 /** Exactly `[{ accountId: uuid, fileId: id }]`. */

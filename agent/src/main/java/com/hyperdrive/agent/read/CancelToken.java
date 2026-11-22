@@ -3,6 +3,7 @@ package com.hyperdrive.agent.read;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -12,6 +13,15 @@ final class CancelToken {
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private final AtomicReference<CompletableFuture<?>> exchange = new AtomicReference<>();
     private final AtomicReference<Closeable> body = new AtomicReference<>();
+    private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
+
+    /** Runs {@code r} once when cancelled (immediately if already cancelled). */
+    void onCancel(Runnable r) {
+        listeners.add(r);
+        if (cancelled.get() && listeners.remove(r)) {
+            r.run();
+        }
+    }
 
     boolean isCancelled() {
         return cancelled.get();
@@ -40,6 +50,11 @@ final class CancelToken {
             Closeable c = body.get();
             if (c != null) {
                 closeQuietly(c);
+            }
+            for (Runnable r : listeners) {
+                if (listeners.remove(r)) {
+                    r.run();
+                }
             }
         }
     }

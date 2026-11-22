@@ -246,7 +246,12 @@ describe('Files: navigation', () => {
         eof: false,
         elapsedMs: 321,
         sha256: 'ab'.repeat(32),
-        revisionPinned: false
+        revisionPinned: false,
+        cache: 'bypass',
+        cacheBypassReason: 'provider_not_version_bound',
+        cacheNotAdmittedReason: null,
+        providerBytesFetched: 4194304,
+        bytesFromCache: 0
       });
     });
     await openAccount('Google Drive — drive.owner@example.com');
@@ -261,6 +266,10 @@ describe('Files: navigation', () => {
     expect(panel).toHaveTextContent(/4,194,304/);
     expect(panel).toHaveTextContent(/321 ms/);
     expect(panel).toHaveTextContent(/Not pinned/);
+    expect(within(panel).getByTestId('verify-cache')).toHaveTextContent(
+      'Bypassed: read directly, nothing cached (Google Drive: reads can’t be pinned to a file version, so they’re never cached)'
+    );
+    expect(panel).toHaveTextContent(/Bytes fetched from provider4,194,304/);
     expect(document.body.textContent).not.toMatch(/mounted|cached on this PC: yes|playing/i);
   });
 

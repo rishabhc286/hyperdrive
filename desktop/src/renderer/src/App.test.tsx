@@ -93,14 +93,14 @@ describe('sidebar navigation', () => {
   it.each([
     ['Files', 'No files to show.'],
     ['Cloud Accounts', 'No cloud accounts connected.'],
-    ['Performance', 'No performance data.'],
-    ['Settings', 'No settings to change yet.']
-  ])('switches to %s with its own empty state', async (label, emptyText) => {
+    ['Performance', 'Local chunk cache'],
+    ['Settings', 'File cache']
+  ])('switches to %s with its own content', async (label, text) => {
     await renderSignedIn();
     await userEvent.click(nav().getByRole('button', { name: label }));
 
     expect(screen.getByRole('heading', { level: 1, name: label })).toBeInTheDocument();
-    expect(screen.getByText(emptyText)).toBeInTheDocument();
+    expect(await screen.findByText(text)).toBeInTheDocument();
     expect(nav().getByRole('button', { name: label })).toHaveAttribute('aria-current', 'page');
     expect(nav().getByRole('button', { name: 'Overview' })).not.toHaveAttribute('aria-current');
   });

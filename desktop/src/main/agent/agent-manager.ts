@@ -29,9 +29,17 @@ export type LaunchConfig =
     }
   | { readonly error: AgentErrorCode };
 
-export type AgentPath = '/local/v1/health' | '/local/v1/status';
+export type AgentPath = '/local/v1/health' | '/local/v1/status' | '/local/v1/cache/status';
 /** The only POST endpoints the desktop may call on the agent (Batch 6). */
-export type AgentPostPath = '/local/v1/credentials' | '/local/v1/credentials/clear' | '/local/v1/reads';
+export type AgentPostPath =
+  | '/local/v1/credentials'
+  | '/local/v1/credentials/clear'
+  | '/local/v1/reads'
+  // Batch 7: chunk cache
+  | '/local/v1/cache/session'
+  | '/local/v1/cache/session/end'
+  | '/local/v1/cache/budget'
+  | '/local/v1/cache/clear';
 
 export interface AgentPostResponse {
   readonly status: number;
@@ -172,6 +180,14 @@ export class AgentManager {
       throw new AgentUnavailableError();
     }
     const response = await this.deps.httpPost(launch.port, path, launch.secret, body, timeoutMs, signal);
+    return { ...response, instanceId: launch.instanceId };
+  }
+
+  /** Authenticated GET of a fixed agent path (main-process only). Throws AgentUnavailableError unless ready. */
+  async get(path: '/local/v1/cache/status', timeoutMs = 10_000): Promise<{ status: number; body: unknown; instanceId: string }> {
+    const launch = this.current;
+    if (this.state !== 'ready' || !launch?.port || !launch.instanceId) throw new AgentUnavailableError();
+    const response = await this.deps.httpGet(launch.port, path, launch.secret, timeoutMs);
     return { ...response, instanceId: launch.instanceId };
   }
 

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -41,7 +42,7 @@ describe.skipIf(!isFile(jar))('local agent smoke test (real Java process)', () =
     const ready = await manager.getStatus();
     expect(ready.state).toBe('ready');
     expect(ready.agentVersion).toBe('0.1.0-SNAPSHOT');
-    expect(ready.capabilities).toEqual({ providerReads: true, rangeReads: true, chunkCache: false, virtualDrive: false });
+    expect(ready.capabilities).toEqual({ providerReads: true, rangeReads: true, chunkCache: true, virtualDrive: false });
 
     // Real credential + read endpoints of the real jar. A read at EOF needs no provider call, so this
     // exercises the local binary transport without any network access.
@@ -63,6 +64,18 @@ describe.skipIf(!isFile(jar))('local agent smoke test (real Java process)', () =
     const cleared = await manager.post('/local/v1/credentials/clear', {});
     expect(JSON.parse(new TextDecoder().decode(cleared.body))).toEqual({ cleared: 1 });
     expect(manager.log.snapshot().join('\n')).not.toContain('ya29.smoke-test');
+
+    // Real cache endpoints: a session with a random key, status, then logout cleanup.
+    const userId = '22222222-3333-4444-8555-666666666666';
+    const key = randomBytes(32).toString('base64');
+    const session = await manager.post('/local/v1/cache/session', { userId, key, fresh: true, budgetBytes: 5 * 1024 ** 3 });
+    expect(session.status).toBe(200);
+    const cacheStatus = await manager.get('/local/v1/cache/status');
+    expect(cacheStatus.body).toMatchObject({ enabled: true, entryCount: 0, budgetBytes: 5 * 1024 ** 3 });
+    expect(JSON.stringify(cacheStatus.body)).not.toContain(key);
+    const ended = await manager.post('/local/v1/cache/session/end', { userId });
+    expect(JSON.parse(new TextDecoder().decode(ended.body))).toEqual({ removed: 0, failed: 0 });
+    expect(manager.log.snapshot().join('\n')).not.toContain(key);
     expect(ready.uptimeMillis).toBeGreaterThanOrEqual(0);
 
     // A second manager on the same data directory is refused by the agent's lock.

@@ -1,3 +1,4 @@
+import type { CacheApi, CacheStatusView } from '../src/shared/cache';
 import { act } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { AuthApi, AuthStatus, SafeUser } from '../src/shared/auth';
@@ -40,6 +41,7 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
 
   const storage = createMockStorage();
   const agent = createMockAgent();
+  const cache = createMockCache();
 
   const api: HyperdriveApi = {
     checkBackendHealth: vi.fn(() =>
@@ -47,7 +49,8 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
     ),
     auth,
     storage,
-    agent: agent.api
+    agent: agent.api,
+    cache
   };
 
   return {
@@ -55,6 +58,7 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
     auth,
     storage,
     agent,
+    cache,
     push(next: AuthStatus) {
       current = next;
       act(() => listener?.(next));
@@ -63,6 +67,39 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
 }
 
 /** Fake storage bridge; every method resolves with an empty success unless a test overrides it. */
+export const CACHE_READY: CacheStatusView = {
+  enabled: true,
+  disabledReason: null,
+  keyProtection: 'available',
+  budgetBytes: 5 * 1024 * 1024 * 1024,
+  encryptedBytesOnDisk: 8 * 1024 * 1024 + 64,
+  tempBytes: 0,
+  entryCount: 2,
+  overBudgetBytes: 0,
+  counters: {
+    hits: 3,
+    misses: 2,
+    notAdmitted: 0,
+    evictions: 1,
+    corruptions: 0,
+    bytesRequested: 5000,
+    providerBytesFetched: 8388608,
+    bytesServedFromCache: 3000
+  },
+  bypasses: { provider_not_version_bound: 4 },
+  lastCleanup: null
+};
+
+export function createMockCache() {
+  return {
+    getStatus: vi.fn<CacheApi['getStatus']>(() => Promise.resolve({ ok: true, value: CACHE_READY })),
+    setBudget: vi.fn<CacheApi['setBudget']>((input) =>
+      Promise.resolve({ ok: true, value: { ...CACHE_READY, budgetBytes: input.budgetBytes } })
+    ),
+    clear: vi.fn<CacheApi['clear']>(() => Promise.resolve({ ok: true, value: { removed: 2, failed: 0 } }))
+  };
+}
+
 export function createMockStorage() {
   return {
     listAccounts: vi.fn<StorageApi['listAccounts']>(() => Promise.resolve({ ok: true, value: [] })),
@@ -89,7 +126,7 @@ export const AGENT_READY: AgentStatus = {
   state: 'ready',
   agentVersion: '0.1.0-SNAPSHOT',
   uptimeMillis: 125_000,
-  capabilities: { providerReads: true, rangeReads: true, chunkCache: false, virtualDrive: false },
+  capabilities: { providerReads: true, rangeReads: true, chunkCache: true, virtualDrive: false },
   error: null,
   autoRestartsRemaining: 2
 };

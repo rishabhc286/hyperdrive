@@ -415,12 +415,12 @@ class ReadTest {
     }
 
     @Test
-    void statusReportsReadsButNoCacheOrDrive() throws Exception {
+    void statusReportsReadsAndCacheButNoDrive() throws Exception {
         JsonNode caps = AgentHarness.JSON.readTree(agent.get(port, "/local/v1/status", "Bearer " + agent.secret, Map.of()).body())
                 .get("capabilities");
         assertThat(caps.get("providerReads").asBoolean()).isTrue();
         assertThat(caps.get("rangeReads").asBoolean()).isTrue();
-        assertThat(caps.get("chunkCache").asBoolean()).isFalse();
+        assertThat(caps.get("chunkCache").asBoolean()).isTrue();
         assertThat(caps.get("virtualDrive").asBoolean()).isFalse();
     }
 

@@ -26,6 +26,7 @@ export function App({ api, pollIntervalMs }: AppProps) {
         onSignOut={() => void api.auth.signOut()}
         storage={api.storage}
         agent={api.agent}
+        cache={api.cache}
         pollIntervalMs={pollIntervalMs}
       />
     );

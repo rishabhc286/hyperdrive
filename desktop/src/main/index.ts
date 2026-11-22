@@ -17,6 +17,10 @@ import { AgentManager } from './agent/agent-manager';
 import { resolveLaunchConfig } from './agent/launch-config';
 import { agentHttpGet, agentHttpPost, checkJava, isFile, randomSecret, spawnAgent } from './agent/node-runtime';
 import { ReadCoordinator } from './storage/read-coordinator';
+import { CacheCoordinator, endsCacheSession } from './storage/cache-coordinator';
+import { CacheKeyStore } from './storage/cache-key-store';
+import { CacheSettings } from './storage/cache-settings';
+import { CacheIpcChannel } from '../shared/cache';
 import { AuthManager, isTrustedAuthorizeUrl } from './auth/auth-manager';
 import { BackendApi } from './auth/backend-api';
 import { startLoopbackListener } from './auth/loopback';
@@ -31,6 +35,7 @@ import {
   parseFileMetadataPayload,
   parseListFilesPayload,
   parseOnboardingPayload,
+  parseCacheBudgetPayload,
   parseTransactionPayload,
   parseVerifyReadPayload
 } from './ipc-validation';
@@ -127,7 +132,24 @@ function handleTrusted(channel: string, handler: (args: unknown[]) => unknown): 
   });
 }
 
-function registerIpc(auth: AuthManager, storage: StorageManager, agent: AgentManager, reads: ReadCoordinator): void {
+function registerIpc(
+  auth: AuthManager,
+  storage: StorageManager,
+  agent: AgentManager,
+  reads: ReadCoordinator,
+  cache: CacheCoordinator
+): void {
+  handleTrusted(CacheIpcChannel.getStatus, (args) => {
+    expectNoArgs(CacheIpcChannel.getStatus, args);
+    return cache.status();
+  });
+  handleTrusted(CacheIpcChannel.setBudget, (args) => {
+    return cache.setBudget(parseCacheBudgetPayload(CacheIpcChannel.setBudget, args).budgetBytes);
+  });
+  handleTrusted(CacheIpcChannel.clear, (args) => {
+    expectNoArgs(CacheIpcChannel.clear, args);
+    return cache.clear();
+  });
   handleTrusted(StorageIpcChannel.verifyFileRead, (args) => {
     return reads.verifyRead(parseVerifyReadPayload(StorageIpcChannel.verifyFileRead, args));
   });
@@ -207,18 +229,43 @@ function registerIpc(auth: AuthManager, storage: StorageManager, agent: AgentMan
   });
 
   auth.onChange((status) => {
+    if (status.phase === 'signed-in') cache.noteUser(status.user?.id ?? null);
     if (status.phase !== 'signed-in') {
       storage.reset();
-      // Sign-out / expiry: drop every delegated provider credential held by the agent.
-      void reads.reset();
+      // Drop every delegated provider credential held by the agent. Only a real sign-out or session
+      // expiry also purges the user's cached chunks and deletes the cache key (docs/cache.md).
+      void reads.reset({ endCache: endsCacheSession(status.phase) });
     }
     mainWindow?.webContents.send(AuthIpcChannel.statusChanged, status);
   });
 }
 
-function createReadCoordinator(api: BackendApi | null, auth: AuthManager, agent: AgentManager): ReadCoordinator {
+function createCacheCoordinator(auth: AuthManager, agent: AgentManager): CacheCoordinator {
+  const userData = app.getPath('userData');
+  const keys = new CacheKeyStore(safeStorage, join(userData, 'cache-keys'));
+  if (!keys.available) {
+    console.warn('[hyperdrive] OS-level encryption is unavailable; the local file cache is disabled (reads stay uncached).');
+  }
+  return new CacheCoordinator({
+    agent,
+    keys,
+    settings: new CacheSettings(join(userData, 'cache-settings.json')),
+    currentUserId: () => {
+      const status = auth.getStatus();
+      return status.phase === 'signed-in' ? (status.user?.id ?? null) : null;
+    }
+  });
+}
+
+function createReadCoordinator(
+  api: BackendApi | null,
+  auth: AuthManager,
+  agent: AgentManager,
+  cache: CacheCoordinator
+): ReadCoordinator {
   return new ReadCoordinator({
     agent,
+    cache,
     issueCredential: async (accountId) => {
       if (!api) throw new Error('Backend not configured');
       return auth.withAccessToken((token) => api.issueReadCredential(token, accountId));
@@ -310,8 +357,9 @@ if (!app.requestSingleInstanceLock()) {
     const api = backendUrl.ok ? new BackendApi(backendUrl.url) : null;
     const auth = createAuthManager(api);
     agent = createAgentManager();
-    const reads = createReadCoordinator(api, auth, agent);
-    registerIpc(auth, createStorageManager(api, auth, reads), agent, reads);
+    const cache = createCacheCoordinator(auth, agent);
+    const reads = createReadCoordinator(api, auth, agent, cache);
+    registerIpc(auth, createStorageManager(api, auth, reads), agent, reads, cache);
     mainWindow = createMainWindow();
     void auth.initialize();
     // The agent is independent of sign-in and of the remote backend; cloud browsing works without it.

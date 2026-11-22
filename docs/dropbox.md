@@ -305,6 +305,21 @@ How the agent reads ranges is described in
 - **Not verified live:** whether Dropbox sends `Dropbox-API-Result` on 206 responses, and its
   exact error bodies, are inferred from the API spec and tested only against a local mock.
 
+### Chunk cache (Batch 7)
+
+- **Admission:** Dropbox is the only provider whose reads are cached, and only when **both** hold:
+  the request enforced the revision (`path = "rev:<rev>"`, from the listing's `rev`), and
+  `Dropbox-API-Result` reports the **same** `rev` and size.
+- **Unconfirmed reads:** if the header is missing, the bytes are served but not stored
+  (`revision_unconfirmed`).
+- **Spec basis:** `files.stone` calls `rev` "a unique identifier for the current revision of a
+  file". Treating a revision's bytes as immutable is an inference from that, so the response check
+  stays mandatory.
+- **Not yet observed live:** whether Dropbox includes `Dropbox-API-Result` on 206 responses. If it
+  doesn't, Dropbox reads will show "not stored: the provider didn't confirm the file version" and
+  nothing will be cached.
+- See [cache.md](cache.md) for chunking, encryption and cleanup.
+
 ### Manual verification: content reads (requires a Dropbox app)
 
 Not executed yet.

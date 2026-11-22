@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ReadDiagnostic, ReadError, StorageFile, StorageProvider, VerifyReadRequest } from '../../shared/storage';
 import { MAX_READ_BYTES, PROVIDER_FILE_ID, UUID } from '../../shared/storage';
+import { BYPASS_REASONS, NOT_ADMITTED_REASONS, type CacheOutcome } from '../../shared/cache';
 import { AgentUnavailableError, type AgentPostPath, type AgentPostResponse } from '../agent/agent-manager';
 import { SessionExpiredError } from '../auth/auth-manager';
 import { ApiError, BackendUnreachableError, type ReadCredential } from '../auth/backend-api';
@@ -18,6 +19,12 @@ export interface ReadCoordinatorDeps {
   /** Fresh metadata of the file to read (backend, ownership-checked). */
   readonly getFile: (accountId: string, fileId: string) => Promise<StorageFile>;
   readonly agent: AgentPort;
+  /** Batch 7 cache policy: key hand-off before reads, account purge on disconnect, purge on logout. */
+  readonly cache?: {
+    ensureSession(): Promise<boolean>;
+    forgetAccount(accountId: string): Promise<void>;
+    endSession(): Promise<unknown>;
+  };
   readonly now?: () => number;
 }
 
@@ -80,6 +87,9 @@ export class ReadCoordinator {
       expectedRevision: file.providerRevision
     };
 
+    // Best effort: without a cache session the agent simply serves the read uncached (and says so).
+    await this.deps.cache?.ensureSession().catch(() => false);
+
     for (let attempt = 0; attempt < 2; attempt++) {
       let handle: Handle;
       try {
@@ -111,13 +121,19 @@ export class ReadCoordinator {
   /** Forget one account (disconnect): drop the handle here and its credential in the agent. */
   async forgetAccount(accountId: string): Promise<void> {
     this.handles.delete(accountId);
-    await this.clearInAgent({ accountId });
+    await this.clearInAgent({ accountId }); // cancels that account's reads (and shared chunk fetches)
+    await this.deps.cache?.forgetAccount(accountId).catch(() => undefined);
   }
 
   /** Forget everything (sign-out, session expiry). */
-  async reset(): Promise<void> {
+  /**
+   * Drop every handle and delegated credential. With `endCache` (a real sign-out or session expiry,
+   * not a transient "checking"/"unavailable" phase) the user's cached chunks and key are purged too.
+   */
+  async reset(options: { endCache?: boolean } = {}): Promise<void> {
     this.handles.clear();
     await this.clearInAgent({});
+    if (options.endCache) await this.deps.cache?.endSession().catch(() => undefined);
   }
 
   private async clearInAgent(body: { accountId?: string }): Promise<void> {
@@ -207,7 +223,8 @@ export class ReadCoordinator {
         eof: response.headers['x-hyperdrive-eof'] === 'true',
         elapsedMs,
         sha256: createHash('sha256').update(bytes).digest('hex'),
-        revisionPinned: response.headers['x-hyperdrive-revision-pinned'] === 'true'
+        revisionPinned: response.headers['x-hyperdrive-revision-pinned'] === 'true',
+        ...cacheFacts(response.headers, bytes.byteLength)
       };
     } finally {
       bytes.fill(0); // diagnostic bytes are not kept anywhere
@@ -219,6 +236,28 @@ class DelegationError extends Error {
   constructor(readonly code: ReadError) {
     super(code);
   }
+}
+
+const OUTCOMES: readonly CacheOutcome[] = ['hit', 'miss', 'partial', 'bypass', 'none'];
+
+/** Cache facts from the agent's headers; unknown values are dropped, numbers bounded. */
+function cacheFacts(headers: Readonly<Record<string, string>>, received: number) {
+  const outcome = headers['x-hyperdrive-cache'] as CacheOutcome | undefined;
+  const bypass = headers['x-hyperdrive-cache-bypass'];
+  const notAdmitted = headers['x-hyperdrive-cache-not-admitted'];
+  const count = (v: string | undefined, max: number): number => {
+    const n = Number(v);
+    return Number.isSafeInteger(n) && n >= 0 && n <= max ? n : 0;
+  };
+  return {
+    cache: outcome && OUTCOMES.includes(outcome) ? outcome : ('bypass' as CacheOutcome),
+    cacheBypassReason: (BYPASS_REASONS as readonly string[]).includes(bypass ?? '') ? (bypass as (typeof BYPASS_REASONS)[number]) : null,
+    cacheNotAdmittedReason: (NOT_ADMITTED_REASONS as readonly string[]).includes(notAdmitted ?? '')
+      ? (notAdmitted as (typeof NOT_ADMITTED_REASONS)[number])
+      : null,
+    providerBytesFetched: count(headers['x-hyperdrive-provider-bytes'], 2 * MAX_READ_BYTES),
+    bytesFromCache: count(headers['x-hyperdrive-cache-bytes'], received)
+  };
 }
 
 function fail(error: ReadError): ReadDiagnostic {

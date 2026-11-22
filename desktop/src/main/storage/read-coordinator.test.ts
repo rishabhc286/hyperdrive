@@ -254,6 +254,39 @@ describe('ReadCoordinator', () => {
     expect(u.agent.restart).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the cache facts through and asks for the cache session before reading', async () => {
+    const reply: AgentPostResponse = {
+      ...binary(new Uint8Array(100).fill(3)),
+      headers: {
+        ...binary(new Uint8Array(100)).headers,
+        'x-hyperdrive-cache': 'hit',
+        'x-hyperdrive-provider-bytes': '0',
+        'x-hyperdrive-cache-bytes': '100',
+        'x-hyperdrive-cache-bypass': 'made_up_reason'
+      }
+    };
+    const t = setup({ readReplies: [reply] });
+    const cache = { ensureSession: vi.fn(() => Promise.resolve(true)), forgetAccount: vi.fn(() => Promise.resolve()), endSession: vi.fn(() => Promise.resolve()) };
+    const coordinator = new ReadCoordinator({ agent: t.agent, issueCredential: t.issueCredential, getFile: t.getFile, cache });
+    const result = await coordinator.verifyRead(request);
+    expect(cache.ensureSession).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, cache: 'hit', providerBytesFetched: 0, bytesFromCache: 100, cacheBypassReason: null });
+  });
+
+  it('purges the cache only on a real session end, and purges accounts on disconnect', async () => {
+    const t = setup();
+    const cache = { ensureSession: vi.fn(() => Promise.resolve(false)), forgetAccount: vi.fn(() => Promise.resolve()), endSession: vi.fn(() => Promise.resolve()) };
+    const coordinator = new ReadCoordinator({ agent: t.agent, issueCredential: t.issueCredential, getFile: t.getFile, cache });
+    await coordinator.reset();
+    expect(cache.endSession).not.toHaveBeenCalled();
+    await coordinator.reset({ endCache: true });
+    expect(cache.endSession).toHaveBeenCalledTimes(1);
+    await coordinator.forgetAccount(ACCOUNT);
+    expect(cache.forgetAccount).toHaveBeenCalledWith(ACCOUNT);
+    // The credential clear (which cancels shared chunk fetches) happens before the cache purge.
+    expect(t.paths().filter((p) => p === '/local/v1/credentials/clear').length).toBeGreaterThan(0);
+  });
+
   it('does nothing on cleanup when no agent is running', async () => {
     const t = setup({ instance: null });
     await t.coordinator.reset();

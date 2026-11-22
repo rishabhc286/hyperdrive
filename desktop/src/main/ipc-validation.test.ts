@@ -6,6 +6,7 @@ import {
   InvalidIpcPayloadError,
   parseAccountPayload,
   parseBeginConnectionPayload,
+  parseCacheBudgetPayload,
   parseFileMetadataPayload,
   parseListFilesPayload,
   parseOnboardingPayload,
@@ -106,6 +107,15 @@ describe('storage IPC payload validation', () => {
       expect(() => parseVerifyReadPayload('c', [bad])).toThrow(InvalidIpcPayloadError);
     }
     expect(() => parseVerifyReadPayload('c', [ok, ok])).toThrow(InvalidIpcPayloadError);
+  });
+
+  it('accepts only a valid cache budget', () => {
+    expect(parseCacheBudgetPayload('c', [{ budgetBytes: 0 }])).toEqual({ budgetBytes: 0 });
+    expect(parseCacheBudgetPayload('c', [{ budgetBytes: 256 * 1024 * 1024 }])).toEqual({ budgetBytes: 268435456 });
+    for (const bad of [{ budgetBytes: 1 }, { budgetBytes: -1 }, { budgetBytes: 1.5 }, { budgetBytes: '10' }, { budgetBytes: 2 ** 41 },
+      { budgetBytes: 0, path: 'C:\\' }, {}]) {
+      expect(() => parseCacheBudgetPayload('c', [bad])).toThrow(InvalidIpcPayloadError);
+    }
   });
 
   it('rejects malformed transaction, account and file payloads', () => {

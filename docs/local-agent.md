@@ -64,10 +64,15 @@ Every endpoint requires the bearer secret and returns `Cache-Control: no-store`.
 | Endpoint | Response |
 | --- | --- |
 | `GET /local/v1/health` | `{"status":"UP"}` |
-| `GET /local/v1/status` | `protocolVersion`, `agentVersion`, `instanceId`, `readiness` (`READY`), `startedAt`, `uptimeMillis`, `capabilities` (`providerReads`/`rangeReads` `true`, `chunkCache`/`virtualDrive` `false`), `lastStartupError` (`null`) |
+| `GET /local/v1/status` | `protocolVersion`, `agentVersion`, `instanceId`, `readiness` (`READY`), `startedAt`, `uptimeMillis`, `capabilities` (`providerReads`/`rangeReads`/`chunkCache` `true`, `virtualDrive` `false`), `lastStartupError` (`null`) |
 | `POST /local/v1/credentials` | Install a delegated credential: `{provider, accountId, accessToken, providerExpiresAt, rootNamespaceId?}` → `201 {handle, retentionExpiresAt, providerExpiresAt}` |
 | `POST /local/v1/credentials/clear` | `{accountId?}` (omit for all) → `{cleared}`; cancels that account's in-flight reads |
 | `POST /local/v1/reads` | One bounded read (below) → `200 application/octet-stream`, or a JSON `{code}` error |
+| `GET /local/v1/cache/status` | Cache enabled/disabled reason, budget, encrypted bytes on disk, temp bytes, entry count, process-lifetime counters, bypass counts, last cleanup. No paths, keys or provider IDs. |
+| `POST /local/v1/cache/session` | `{userId, key (base64, 32 bytes), fresh, budgetBytes}`: activate a user's cache key (memory only) |
+| `POST /local/v1/cache/session/end` | `{userId}` → `{removed, failed}`: logout purge of that user's chunks; forgets the key |
+| `POST /local/v1/cache/budget` | `{budgetBytes}`: `0` or 256 MiB–1 TiB |
+| `POST /local/v1/cache/clear` | `{accountId?}` → `{removed, failed}`: this user's chunks, or one account's |
 
 POST bodies must be `application/json`, have a `Content-Length` of at most 16 KiB, and contain
 only the listed fields. A refresh token or any other unknown field is rejected with `400`.
@@ -218,9 +223,22 @@ This is an **application contract**, not HTTP `Range` passthrough.
 | "Another HyperDrive agent is already using…" | Close other HyperDrive windows. If needed, find the leftover agent with `Get-CimInstance Win32_Process -Filter "Name='java.exe'"` and end only the one whose command line contains `hyperdrive-agent.jar`. |
 | Agent never becomes ready | Look at the Electron main-process console for `[hyperdrive-agent]` lines. |
 
+### Cache headers on reads (Batch 7)
+
+Successful reads also carry:
+- `X-HyperDrive-Cache`: `hit`, `miss`, `partial`, `bypass` or `none`.
+- `X-HyperDrive-Cache-Bypass`: why the cache wasn't used (`provider_not_version_bound`,
+  `version_unknown`, `cache_key_unavailable` or `cache_disabled`).
+- `X-HyperDrive-Cache-Not-Admitted`: why fetched bytes weren't stored (`revision_unconfirmed`,
+  `cache_full`, `cache_invalidated`, `cache_error` or `cache_disabled`).
+- `X-HyperDrive-Provider-Bytes` and `X-HyperDrive-Cache-Bytes`.
+
+**Fetch size:** eligible misses fetch whole aligned 4 MiB chunks (at most two per read), while
+bypassed reads fetch exactly the requested range. Details: [cache.md](cache.md).
+
 ## Not implemented
 
-- The chunk cache and cache encryption, prefetching, full-file downloads and playback.
+- Prefetching, full-file downloads and playback.
 - Writes and staging.
 - WinFsp and drive mounting.
 - A Windows service, auto-start at login, an installer, and a bundled JRE.

@@ -380,6 +380,17 @@ How the agent reads ranges is described in
 - **Errors:** 401 → one re-delegation; rate-limit 403/429 → retried, then reported; other 403s →
   forbidden (not treated as expiry); 404 → not found.
 
+### Chunk cache (Batch 7): Google reads are never cached
+
+- **Why:** ranged `alt=media` downloads serve whatever is current. `headRevisionId`,
+  `modifiedTime`, size or `md5Checksum` checks before or after a read can't make a range, or two
+  chunks, version-atomic.
+- **Result:** every Drive read bypasses the cache (`provider_not_version_bound`). It fetches
+  exactly the requested range, as in Batch 6, and the diagnostic says so.
+- **Not built:** a revisions-based design ("Keep Forever" revisions) was deliberately not built; it
+  would change users' files. See
+  [ADR 0003](adr/0003-cache-consistency-and-key-lifecycle.md).
+
 ### Manual QA: content reads (requires real Google credentials)
 
 Not executed yet.

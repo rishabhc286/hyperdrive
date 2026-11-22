@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { AgentIpcChannel, type AgentApi, type AgentStatus } from '../shared/agent';
 import { AuthIpcChannel, type AuthApi, type AuthStatus } from '../shared/auth';
+import { CacheIpcChannel, type CacheApi } from '../shared/cache';
 import { IpcChannel, type HyperdriveApi } from '../shared/backend-health';
 import { StorageIpcChannel, type StorageApi } from '../shared/storage';
 
@@ -69,11 +70,19 @@ const agent: AgentApi = {
   }
 };
 
+// Cache status and controls only: never paths, keys or tokens.
+const cache: CacheApi = {
+  getStatus: () => ipcRenderer.invoke(CacheIpcChannel.getStatus),
+  setBudget: (input) => ipcRenderer.invoke(CacheIpcChannel.setBudget, { budgetBytes: Number(input.budgetBytes) }),
+  clear: () => ipcRenderer.invoke(CacheIpcChannel.clear)
+};
+
 const api: HyperdriveApi = {
   checkBackendHealth: () => ipcRenderer.invoke(IpcChannel.backendHealth),
   auth,
   storage,
-  agent
+  agent,
+  cache
 };
 
 contextBridge.exposeInMainWorld('hyperdrive', api);

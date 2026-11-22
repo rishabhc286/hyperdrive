@@ -67,6 +67,21 @@ The launch website is a separate project and is not part of this repository.
     reconnected before reads work.
   - Trade-offs and honest limits: [ADR 0002](docs/adr/0002-provider-access-token-delegation.md).
 
+- **Batch 7 (encrypted local chunk cache):**
+  - The agent keeps an **encrypted** (AES-256-GCM), **bounded** (default 5 GiB) cache of 4 MiB
+    chunks under its data directory, with LRU eviction, crash-safe publication and
+    clear/disconnect/logout cleanup.
+  - **Only reads bound to one exact file version are cached:** Dropbox `rev:` reads that Dropbox
+    confirms.
+  - **Google Drive reads are never cached** (Drive can't pin a ranged read to a version). They
+    bypass the cache with an explicit reason.
+  - The per-user key is created by the desktop and protected with Windows DPAPI. Without OS
+    protection the disk cache is off, and reads still work.
+  - Real cache metrics are on **Performance**; the size limit and **Clear cache** are in
+    **Settings**. Verify file read shows hit, miss or bypass and the bytes fetched.
+  - The cache is not offline access, and nothing has been verified against live Dropbox or Google.
+  - Design: [docs/cache.md](docs/cache.md) · [ADR 0003](docs/adr/0003-cache-consistency-and-key-lifecycle.md).
+
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
 [docs/google-drive.md](docs/google-drive.md) · [docs/dropbox.md](docs/dropbox.md) ·
 [docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
@@ -75,8 +90,9 @@ Design and security details: [docs/authentication.md](docs/authentication.md) ·
 
 - Google Shared drives / "Shared with me", opening or downloading whole files, exporting native
   documents, following shortcuts or links, OneDrive.
-- The chunk cache, LRU eviction, prefetching, playback and metrics. Batch 6 reads are single
-  bounded ranges for diagnostics only, and nothing is cached.
+- Prefetching, playback/media preview, full-file downloads and throughput metrics. Reads happen
+  only through the Verify file read diagnostic.
+- Persistent caching of Google Drive content: no version-pinned ranged reads (see ADR 0003).
 - The WinFsp virtual drive (`vfs/`).
 - Agent packaging: no bundled Java runtime and no installer. Development uses your JDK 21+.
 - Google OAuth verification: `drive.readonly` is a restricted scope. HyperDrive is unverified

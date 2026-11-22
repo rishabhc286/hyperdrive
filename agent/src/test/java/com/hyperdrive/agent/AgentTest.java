@@ -69,7 +69,7 @@ class AgentTest {
             assertThat(caps.propertyNames()).containsExactlyInAnyOrder("providerReads", "rangeReads", "chunkCache", "virtualDrive");
             assertThat(caps.get("providerReads").asBoolean()).isTrue();
             assertThat(caps.get("rangeReads").asBoolean()).isTrue();
-            assertThat(caps.get("chunkCache").asBoolean()).isFalse();
+            assertThat(caps.get("chunkCache").asBoolean()).isTrue();
             assertThat(caps.get("virtualDrive").asBoolean()).isFalse();
             assertThat(status.get("lastStartupError").isNull()).isTrue();
             assertThat(status.toString()).doesNotContain(h.secret, temp.toString(), "dataDir", "env", "path");
