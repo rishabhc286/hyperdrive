@@ -1,5 +1,14 @@
 # Progress
 
+## License added (2026-11-22)
+
+- **License file:** added `LICENSE` with the official GPL-3.0 text from
+  <https://www.gnu.org/licenses/gpl-3.0.txt> (35,149 bytes, SHA-256
+  `3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986`).
+- **Consistency:** the project license is `GPL-3.0-only`, matching `desktop/package.json`,
+  `backend/pom.xml` and `agent/pom.xml`. The README's License section is updated.
+- **Batch 1 limitation resolved:** the Batch 1 note "no `LICENSE` file" below is now resolved.
+
 ## Batch 5: local agent process, authenticated loopback API, Electron lifecycle (2026-11-22)
 
 ### Foundation check before starting

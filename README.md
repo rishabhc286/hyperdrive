@@ -213,5 +213,12 @@ compose.yaml, .env.example
 
 ## License
 
-Intended license: GPL-3.0 (the planned WinFsp integration is GPLv3 with a FLOSS exception). A
-`LICENSE` file has not been added yet; see [docs/progress.md](docs/progress.md).
+HyperDrive is free software, licensed under the **GNU General Public License v3.0 only**
+(`GPL-3.0-only`). See [LICENSE](LICENSE) for the full text.
+
+- **Your rights:** you may use, study, share and modify it. If you distribute modified versions,
+  you must make their source available under the same license.
+- **WinFsp:** the planned virtual drive builds on WinFsp, which is itself licensed under GPLv3
+  with a FLOSS exception.
+- **Dependencies:** they keep their own licenses. Electron, React and Vite use MIT; Spring,
+  Jackson and Nimbus use Apache-2.0. Both are compatible with GPL-3.0.
