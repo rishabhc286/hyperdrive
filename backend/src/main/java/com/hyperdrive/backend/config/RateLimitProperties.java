@@ -27,5 +27,7 @@ public record RateLimitProperties(
         @DefaultValue("300") int browse,
         /** Provider read-credential delegation (Batch 6). */
         @DefaultValue("30") int readCredentials,
+        /** Virtual-drive metadata listing by the local agent (Batch 8). */
+        @DefaultValue("600") int vfsBrowse,
         @DefaultValue("10000") int maxTrackedClients) {
 }

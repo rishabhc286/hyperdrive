@@ -1,3 +1,4 @@
+import { isAllowedDriveLetter } from '../shared/vfs';
 import { isValidCacheBudget } from '../shared/cache';
 /** Validation of renderer-supplied IPC payloads. Anything unexpected is rejected. */
 import {
@@ -133,4 +134,12 @@ export function parseFileMetadataPayload(channel: string, args: unknown[]): { ac
   const fileId = payload['fileId'];
   if (typeof fileId !== 'string' || !PROVIDER_FILE_ID.test(fileId)) throw new InvalidIpcPayloadError(channel);
   return { accountId: uuidField(channel, payload, 'accountId'), fileId };
+}
+
+/** Exactly `[{ letter: "D".."Z" }]` (Batch 8 virtual drive). */
+export function parseDriveLetterPayload(channel: string, args: unknown[]): { letter: string } {
+  const payload = singleObject(channel, args, ['letter']);
+  const letter = payload['letter'];
+  if (!isAllowedDriveLetter(letter)) throw new InvalidIpcPayloadError(channel);
+  return { letter };
 }

@@ -65,7 +65,7 @@ interface Props {
 
 /**
  * Local agent card. "Ready" means only that the agent process runs and answers authenticated
- * requests; the card says plainly that it reads, caches and mounts nothing yet.
+ * requests; the card says plainly what it does (bounded reads, encrypted cache, drive metadata).
  */
 export function AgentStatusCard({ status, restarting, onRestart }: Props) {
   const busy =
@@ -94,7 +94,11 @@ export function AgentStatusCard({ status, restarting, onRestart }: Props) {
         {status?.capabilities?.rangeReads
           ? ' It can read bounded byte ranges (at most 4 MiB at a time) of your files from Google Drive or Dropbox when you run “Verify file read”, using short-lived access the HyperDrive server delegates to it in memory.'
           : ' It doesn’t read files from Google Drive or Dropbox.'}{' '}
-        It doesn’t cache anything or create a drive yet. Browsing your cloud accounts doesn’t depend on it.
+        {status?.capabilities?.chunkCache ? ' It keeps an encrypted cache of eligible Dropbox file pieces on this PC.' : ''}
+        {status?.capabilities?.virtualDrive
+          ? ' It serves folder and file details (not contents) to the virtual drive while it’s mounted.'
+          : ''}{' '}
+        Browsing your cloud accounts in this window doesn’t depend on it.
       </p>
       <button type="button" className="button button-secondary" onClick={onRestart} disabled={busy}>
         {restarting || status?.state === 'restarting' ? 'Restarting…' : 'Restart agent'}

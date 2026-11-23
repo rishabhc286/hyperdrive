@@ -25,9 +25,9 @@ describe('Local agent status', () => {
     expect(card()).toHaveTextContent('0.1.0-SNAPSHOT');
     expect(card()).toHaveTextContent('2 min');
     expect(card()).toHaveTextContent(/read bounded byte ranges \(at most 4 MiB at a time\)/);
-    expect(card()).toHaveTextContent(/doesn’t cache anything or create a drive yet/);
+    expect(card()).not.toHaveTextContent(/doesn’t cache anything or create a drive yet/);
     // The other surfaces keep their own, separate status.
-    expect(screen.getByRole('article', { name: 'Virtual drive' })).toHaveTextContent('Virtual drive not implemented yet.');
+    expect(await screen.findByRole('article', { name: 'Virtual drive' })).toHaveTextContent(/Folders and file details are available/);
     expect(screen.getByRole('article', { name: 'Backend' })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/mounted|cached \d|MB\/s|Drive connected/i);
   });
@@ -81,7 +81,7 @@ describe('Local agent status', () => {
     await renderApp(AGENT_READY);
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(await screen.findByText('Ready (version 0.1.0-SNAPSHOT)')).toBeInTheDocument();
-    expect(screen.getByText('Not implemented yet')).toBeInTheDocument();
+    expect(screen.getByText('Read-only, metadata only (manage it on Overview)')).toBeInTheDocument();
   });
 
   it('cloud browsing keeps working while the agent is down', async () => {

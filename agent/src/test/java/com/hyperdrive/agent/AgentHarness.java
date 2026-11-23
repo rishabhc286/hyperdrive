@@ -58,6 +58,17 @@ final class AgentHarness implements AutoCloseable {
         return http.send(r, HttpResponse.BodyHandlers.ofByteArray());
     }
 
+    /** JSON POST with an explicit Authorization header (or none). */
+    HttpResponse<String> postAs(int port, String path, Object body, String authorization) throws Exception {
+        HttpRequest.Builder r = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)));
+        if (authorization != null) {
+            r.header("Authorization", authorization);
+        }
+        return http.send(r.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     static String newSecret() {
         byte[] b = new byte[32];
         RANDOM.nextBytes(b);

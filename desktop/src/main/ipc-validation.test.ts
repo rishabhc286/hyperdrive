@@ -13,6 +13,7 @@ import {
   parseTransactionPayload,
   parseVerifyReadPayload
 } from './ipc-validation';
+import { parseDriveLetterPayload } from './ipc-validation';
 
 describe('IPC payload validation', () => {
   it('accepts exactly { username: string }', () => {
@@ -124,5 +125,14 @@ describe('storage IPC payload validation', () => {
     expect(() => parseAccountPayload('c', [ACCOUNT])).toThrow(InvalidIpcPayloadError);
     expect(() => parseFileMetadataPayload('c', [{ accountId: ACCOUNT }])).toThrow(InvalidIpcPayloadError);
     expect(() => parseFileMetadataPayload('c', [{ accountId: ACCOUNT, fileId: 'a b' }])).toThrow(InvalidIpcPayloadError);
+  });
+});
+
+describe('virtual drive IPC (Batch 8)', () => {
+  it('accepts exactly one allowed drive letter and nothing else', () => {
+    expect(parseDriveLetterPayload('c', [{ letter: 'H' }])).toEqual({ letter: 'H' });
+    for (const bad of [[{ letter: 'C' }], [{ letter: 'h' }], [{ letter: 'HH' }], [{ letter: 'H', path: 'C:/' }], [], [{}]]) {
+      expect(() => parseDriveLetterPayload('c', bad)).toThrow();
+    }
   });
 });

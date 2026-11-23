@@ -85,6 +85,25 @@ Packaging (installer, code signing) is not set up yet.
   through the production `AgentManager` with real `spawn` and `fetch`. It's skipped (shown as
   skipped by Vitest) when the jar hasn't been built.
 
+## Virtual drive (`vfs/`)
+
+Windows x64 only. Prerequisites (install yourself; nothing is installed by the build):
+- Visual Studio 2022 or its Build Tools with **Desktop development with C++** (MSVC x64; the
+  bundled CMake and Ninja are used).
+- **WinFsp** with the **Developer** feature (headers and `winfsp-x64.lib` under
+  `C:\Program Files (x86)\WinFsp`). Tested with WinFsp 2.1 (2025 release).
+
+```powershell
+cd vfs
+.\build.cmd                                   # configure, build, run native unit tests
+node tests\fixture-mount-check.mjs build\hyperdrive-vfs.exe          # opt-in: real mount, fixture data
+node tests\agent-mount-check.mjs ..\agent\target\hyperdrive-agent.jar build\hyperdrive-vfs.exe  # opt-in: real agent chain
+```
+
+The first configure downloads nlohmann/json 3.11.3 source (pinned by SHA-256). The desktop uses
+`vfs\build\hyperdrive-vfs.exe` in development, or an absolute `HYPERDRIVE_VFS_EXE`. See
+[virtual-drive.md](virtual-drive.md).
+
 ## Backend (`backend/`)
 
 | Command | What it does |

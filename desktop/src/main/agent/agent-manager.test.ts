@@ -132,6 +132,10 @@ describe('AgentManager: startup', () => {
     expect(status.capabilities).toEqual({ providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false });
     expect(states.map((s) => s.state)).toEqual(['starting', 'ready', 'ready']);
     expect(JSON.stringify(states)).not.toMatch(new RegExp(`${SECRET}|50123|java\\.exe|AppData`));
+    // Batch 8: the loopback port is available to the main process only while ready.
+    expect(manager.loopbackPort()).toBe(50123);
+    await manager.stop();
+    expect(manager.loopbackPort()).toBeNull();
   });
 
   it('deduplicates concurrent start requests', async () => {

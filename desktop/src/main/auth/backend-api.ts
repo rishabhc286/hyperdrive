@@ -231,6 +231,24 @@ export class BackendApi {
     await this.send('DELETE', `/api/v1/accounts/${encodeURIComponent(accountId)}`, undefined, accessToken, [204]);
   }
 
+  /** Batch 8: a short-lived, metadata-only grant for the local agent (virtual drive). */
+  async issueMetadataGrant(accessToken: string): Promise<{ grant: string; expiresAt: string }> {
+    const body = await this.json(await this.send('POST', '/api/v1/metadata-grants', undefined, accessToken, [201]));
+    const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+    const grant = record['grant'];
+    const expiresAt = record['expiresAt'];
+    if (typeof grant !== 'string' || !/^hdm_[A-Za-z0-9_-]{43}$/.test(grant) || typeof expiresAt !== 'string' ||
+        Number.isNaN(Date.parse(expiresAt))) {
+      throw new UnexpectedResponseError();
+    }
+    return { grant, expiresAt };
+  }
+
+  /** Revokes this session's metadata grant (unmount, sign-out). */
+  async revokeMetadataGrant(accessToken: string): Promise<void> {
+    await this.send('DELETE', '/api/v1/metadata-grants', undefined, accessToken, [204]);
+  }
+
   /** Provider-side revocation (Dropbox only), then local disconnect. Re-parsed field by field. */
   async revokeAndDisconnect(accessToken: string, accountId: string): Promise<RevokeResult> {
     const path = `/api/v1/accounts/${encodeURIComponent(accountId)}/revoke-and-disconnect`;

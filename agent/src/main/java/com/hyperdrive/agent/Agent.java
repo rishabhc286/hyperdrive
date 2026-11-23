@@ -10,6 +10,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.HashMap;
+import java.util.Set;
+import java.time.format.DateTimeParseException;
+import com.hyperdrive.agent.vfs.BackendMetadataClient;
+import com.hyperdrive.agent.vfs.MetadataSource;
+import com.hyperdrive.agent.vfs.MountRegistry;
+import com.hyperdrive.agent.vfs.VfsMetadataService;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -67,6 +74,10 @@ public final class Agent {
     private final CredentialRegistry credentials;
     private ReadService reads;
     private ChunkCache cache;
+    /** Batch 8: virtual-drive mount capability and the backend metadata grant (memory only). */
+    private final MountRegistry mounts;
+    private volatile MetadataSource metadataSource;
+    private VfsMetadataService vfs;
 
     public Agent(InputStream stdin, PrintStream stdout, PrintStream stderr, Clock clock, Duration bootstrapTimeout) {
         this(stdin, stdout, stderr, clock, bootstrapTimeout, ProviderEndpoints.PRODUCTION, d -> Thread.sleep(d),
@@ -86,6 +97,13 @@ public final class Agent {
         this.sleeper = sleeper;
         this.providerRequestTimeout = providerRequestTimeout;
         this.credentials = new CredentialRegistry(clock);
+        this.mounts = new MountRegistry(clock);
+        this.metadataSource = new BackendMetadataClient(Duration.ofSeconds(5), Duration.ofSeconds(20), clock);
+    }
+
+    /** In-process tests only: a fake backend metadata source. */
+    void useMetadataSource(MetadataSource source) {
+        this.metadataSource = source;
     }
 
     /** Runs until shutdown; returns the process exit code. */
@@ -130,17 +148,30 @@ public final class Agent {
                 // Encrypted chunk cache under the agent's own data directory (inert until a key arrives).
                 cache = new ChunkCache(bootstrap.dataDir().resolve("cache"), provider, log::info);
                 reads = new ReadService(credentials, provider, cache);
+                vfs = new VfsMetadataService(metadataSource, clock);
+                Map<String, LocalApiServer.PostRoute> posts = new HashMap<>();
+                posts.put("/local/v1/credentials", this::installCredential);
+                posts.put("/local/v1/credentials/clear", this::clearCredentials);
+                posts.put("/local/v1/reads", this::read);
+                posts.put("/local/v1/cache/session", this::cacheSession);
+                posts.put("/local/v1/cache/session/end", this::cacheSessionEnd);
+                posts.put("/local/v1/cache/budget", this::cacheBudget);
+                posts.put("/local/v1/cache/clear", this::cacheClear);
+                // Batch 8 administration (launch secret): create/renew/revoke the virtual-drive mount.
+                posts.put("/local/v1/vfs/mount", this::vfsMount);
+                posts.put("/local/v1/vfs/mount/grant", this::vfsGrant);
+                posts.put("/local/v1/vfs/mount/revoke", this::vfsRevoke);
                 server = LocalApiServer.start(bootstrap.secret(),
                         Map.of("/local/v1/health", () -> new LocalApiServer.Response.Json(200, health()),
                                 "/local/v1/status", () -> new LocalApiServer.Response.Json(200, status()),
-                                "/local/v1/cache/status", () -> new LocalApiServer.Response.Json(200, cacheStatus())),
-                        Map.of("/local/v1/credentials", this::installCredential,
-                                "/local/v1/credentials/clear", this::clearCredentials,
-                                "/local/v1/reads", this::read,
-                                "/local/v1/cache/session", this::cacheSession,
-                                "/local/v1/cache/session/end", this::cacheSessionEnd,
-                                "/local/v1/cache/budget", this::cacheBudget,
-                                "/local/v1/cache/clear", this::cacheClear),
+                                "/local/v1/cache/status", () -> new LocalApiServer.Response.Json(200, cacheStatus()),
+                                "/local/v1/vfs/status", () -> new LocalApiServer.Response.Json(200, vfsStatus())),
+                        posts,
+                        // Batch 8 VFS routes: mount capability only, read-only metadata.
+                        Map.of("/local/v1/vfs/session", this::vfsSession,
+                                "/local/v1/vfs/accounts", this::vfsAccounts,
+                                "/local/v1/vfs/list", this::vfsList),
+                        mounts::authenticate,
                         log);
             } catch (IOException e) {
                 log.error("Local API could not bind to 127.0.0.1: " + e.getClass().getSimpleName());
@@ -162,6 +193,7 @@ public final class Agent {
 
             awaitShutdown();
             log.info("Agent shutting down (" + shutdownReason + ")");
+            mounts.revoke(); // the VFS capability dies with the agent
             int cleared = credentials.clear(null); // also cancels in-flight reads
             if (cache != null) {
                 cache.shutdown(); // drops the in-memory key; encrypted files stay for the next session
@@ -282,7 +314,7 @@ public final class Agent {
         capabilities.put("providerReads", true);
         capabilities.put("rangeReads", true);
         capabilities.put("chunkCache", true);
-        capabilities.put("virtualDrive", false);
+        capabilities.put("virtualDrive", true); // Batch 8: metadata-only mount support
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("protocolVersion", Bootstrap.PROTOCOL_VERSION);
         body.put("agentVersion", version);
@@ -480,6 +512,107 @@ public final class Agent {
         } catch (IllegalArgumentException e) {
             return new LocalApiServer.Response.Json(400, LocalApiServer.error("invalid_request"));
         }
+    }
+
+    // --- Batch 8: virtual drive ------------------------------------------------------------------
+
+    private LocalApiServer.Response vfsMount(JsonNode body) {
+        if (!onlyFields(body, Set.of("userId", "backendOrigin", "grant", "grantExpiresAt"))) {
+            return badRequest("invalid_request");
+        }
+        try {
+            UUID userId = UUID.fromString(body.path("userId").asString(""));
+            Instant expires = Instant.parse(body.path("grantExpiresAt").asString(""));
+            MountRegistry.Created created = mounts.create(userId, body.path("backendOrigin").asString(null),
+                    body.path("grant").asString(null), expires);
+            log.info("Virtual drive mount capability issued (generation " + created.generation() + ")");
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("generation", created.generation());
+            out.put("capability", created.capability());
+            return new LocalApiServer.Response.Json(201, out);
+        } catch (MountRegistry.InvalidMountException e) {
+            return badRequest(e.code());
+        } catch (IllegalArgumentException | DateTimeParseException e) {
+            return badRequest("invalid_request");
+        }
+    }
+
+    private LocalApiServer.Response vfsGrant(JsonNode body) {
+        if (!onlyFields(body, Set.of("generation", "grant", "grantExpiresAt"))
+                || !body.path("generation").isIntegralNumber()) {
+            return badRequest("invalid_request");
+        }
+        try {
+            mounts.renewGrant(body.get("generation").asLong(), body.path("grant").asString(null),
+                    Instant.parse(body.path("grantExpiresAt").asString("")));
+            return new LocalApiServer.Response.Json(200, Map.of("renewed", true));
+        } catch (MountRegistry.InvalidMountException e) {
+            return new LocalApiServer.Response.Json("mount_not_found".equals(e.code()) ? 404 : 400,
+                    LocalApiServer.error(e.code()));
+        } catch (DateTimeParseException e) {
+            return badRequest("invalid_request");
+        }
+    }
+
+    private LocalApiServer.Response vfsRevoke(JsonNode body) {
+        if (!onlyFields(body, Set.of())) {
+            return badRequest("invalid_request");
+        }
+        boolean revoked = mounts.revoke();
+        if (revoked) {
+            log.info("Virtual drive mount capability revoked");
+        }
+        return new LocalApiServer.Response.Json(200, Map.of("revoked", revoked));
+    }
+
+    private Map<String, Object> vfsStatus() {
+        MountRegistry.Mount mount = mounts.current();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("active", mount != null);
+        out.put("generation", mount == null ? null : mount.generation());
+        return out;
+    }
+
+    /** VFS hello/heartbeat: proves the capability is (still) valid. */
+    private LocalApiServer.Response vfsSession(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of())) {
+            return badRequest("invalid_request");
+        }
+        return new LocalApiServer.Response.Json(200, Map.of("protocolVersion", 1, "generation", mount.generation()));
+    }
+
+    private LocalApiServer.Response vfsAccounts(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of())) {
+            return badRequest("invalid_request");
+        }
+        try {
+            return new LocalApiServer.Response.Json(200, vfs.accounts(mount));
+        } catch (MetadataSource.MetadataException e) {
+            return new LocalApiServer.Response.Json(e.status(), LocalApiServer.error(e.code()));
+        }
+    }
+
+    private LocalApiServer.Response vfsList(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of("accountId", "directory"))) {
+            return badRequest("invalid_request");
+        }
+        try {
+            UUID accountId = UUID.fromString(body.path("accountId").asString(""));
+            JsonNode dir = body.get("directory");
+            if (dir != null && !dir.isNull() && !dir.isString()) {
+                return badRequest("invalid_request");
+            }
+            String directory = dir == null || dir.isNull() ? null : dir.asString();
+            return new LocalApiServer.Response.Json(200, vfs.list(mount, accountId, directory));
+        } catch (MetadataSource.MetadataException e) {
+            return new LocalApiServer.Response.Json(e.status(), LocalApiServer.error(e.code()));
+        } catch (IllegalArgumentException e) {
+            return badRequest("invalid_request");
+        }
+    }
+
+    private static LocalApiServer.Response badRequest(String code) {
+        return new LocalApiServer.Response.Json(400, LocalApiServer.error(code));
     }
 
     private static boolean onlyFields(JsonNode body, java.util.Set<String> allowed) {

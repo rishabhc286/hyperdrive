@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { AgentIpcChannel, type AgentApi, type AgentStatus } from '../shared/agent';
 import { AuthIpcChannel, type AuthApi, type AuthStatus } from '../shared/auth';
 import { CacheIpcChannel, type CacheApi } from '../shared/cache';
+import { VirtualDriveIpcChannel, type VirtualDriveApi, type VirtualDriveStatus } from '../shared/vfs';
 import { IpcChannel, type HyperdriveApi } from '../shared/backend-health';
 import { StorageIpcChannel, type StorageApi } from '../shared/storage';
 
@@ -79,12 +80,29 @@ const cache: CacheApi = {
   clear: () => ipcRenderer.invoke(CacheIpcChannel.clear)
 };
 
+// Virtual drive (Batch 8): states and actions only; no port, capability, grant or path crosses.
+const vfs: VirtualDriveApi = {
+  getStatus: () => ipcRenderer.invoke(VirtualDriveIpcChannel.getStatus),
+  mount: () => ipcRenderer.invoke(VirtualDriveIpcChannel.mount),
+  unmount: () => ipcRenderer.invoke(VirtualDriveIpcChannel.unmount),
+  openInExplorer: () => ipcRenderer.invoke(VirtualDriveIpcChannel.openInExplorer),
+  setDriveLetter: (input) => ipcRenderer.invoke(VirtualDriveIpcChannel.setDriveLetter, { letter: String(input.letter) }),
+  onChange: (listener) => {
+    const wrapped = (_event: unknown, status: VirtualDriveStatus) => listener(status);
+    ipcRenderer.on(VirtualDriveIpcChannel.changed, wrapped);
+    return () => {
+      ipcRenderer.removeListener(VirtualDriveIpcChannel.changed, wrapped);
+    };
+  }
+};
+
 const api: HyperdriveApi = {
   checkBackendHealth: () => ipcRenderer.invoke(IpcChannel.backendHealth),
   auth,
   storage,
   agent,
-  cache
+  cache,
+  vfs
 };
 
 contextBridge.exposeInMainWorld('hyperdrive', api);

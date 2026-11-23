@@ -421,7 +421,7 @@ class ReadTest {
         assertThat(caps.get("providerReads").asBoolean()).isTrue();
         assertThat(caps.get("rangeReads").asBoolean()).isTrue();
         assertThat(caps.get("chunkCache").asBoolean()).isTrue();
-        assertThat(caps.get("virtualDrive").asBoolean()).isFalse();
+        assertThat(caps.get("virtualDrive").asBoolean()).isTrue();
     }
 
     @Test

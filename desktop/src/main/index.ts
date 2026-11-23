@@ -37,10 +37,21 @@ import {
   parseOnboardingPayload,
   parseCacheBudgetPayload,
   parseTransactionPayload,
-  parseVerifyReadPayload
+  parseVerifyReadPayload,
+  parseDriveLetterPayload
 } from './ipc-validation';
 import { isTrustedStorageAuthorizeUrl, StorageManager } from './storage/storage-manager';
 import { isTrustedRendererUrl, type RendererOrigin } from './security';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { VirtualDriveIpcChannel } from '../shared/vfs';
+import { resolveVfsConfig } from './vfs/vfs-config';
+import { VfsManager } from './vfs/vfs-manager';
+import { VirtualDriveCoordinator } from './vfs/virtual-drive';
+import { DriveSettings } from './vfs/drive-settings';
+import { AgentUnavailableError } from './agent/agent-manager';
+import { SessionExpiredError } from './auth/auth-manager';
+import { BackendUnreachableError } from './auth/backend-api';
 
 // Set by electron-vite only while running `npm run dev`.
 const devServerUrl = app.isPackaged ? undefined : process.env['ELECTRON_RENDERER_URL'];
@@ -137,8 +148,41 @@ function registerIpc(
   storage: StorageManager,
   agent: AgentManager,
   reads: ReadCoordinator,
-  cache: CacheCoordinator
+  cache: CacheCoordinator,
+  drive: VirtualDriveCoordinator
 ): void {
+  // Virtual drive (Batch 8): status, mount/unmount, open the confirmed mount, drive letter only.
+  handleTrusted(VirtualDriveIpcChannel.getStatus, (args) => {
+    expectNoArgs(VirtualDriveIpcChannel.getStatus, args);
+    return drive.status();
+  });
+  handleTrusted(VirtualDriveIpcChannel.mount, (args) => {
+    expectNoArgs(VirtualDriveIpcChannel.mount, args);
+    return drive.mount();
+  });
+  handleTrusted(VirtualDriveIpcChannel.unmount, (args) => {
+    expectNoArgs(VirtualDriveIpcChannel.unmount, args);
+    return drive.unmount();
+  });
+  handleTrusted(VirtualDriveIpcChannel.openInExplorer, async (args) => {
+    expectNoArgs(VirtualDriveIpcChannel.openInExplorer, args);
+    // The target is computed here from the confirmed mount; the renderer supplies nothing.
+    const root = drive.mountedRoot();
+    if (!root || !/^[D-Z]:\\$/.test(root)) return { ok: false, error: 'unknown' };
+    const error = await shell.openPath(root);
+    return error ? { ok: false, error: 'unknown' } : { ok: true, value: null };
+  });
+  handleTrusted(VirtualDriveIpcChannel.setDriveLetter, (args) => {
+    return drive.setDriveLetter(parseDriveLetterPayload(VirtualDriveIpcChannel.setDriveLetter, args).letter);
+  });
+  drive.onChange((status) => mainWindow?.webContents.send(VirtualDriveIpcChannel.changed, status));
+  agent.onChange((status) => {
+    // A restarted or failed agent has forgotten the mount capability: tear the drive down.
+    const instance = status.state === 'ready' ? agent.instanceId() : null;
+    if (mountedAgentInstance !== null && instance !== mountedAgentInstance) void drive.teardown();
+    mountedAgentInstance = instance;
+  });
+
   handleTrusted(CacheIpcChannel.getStatus, (args) => {
     expectNoArgs(CacheIpcChannel.getStatus, args);
     return cache.status();
@@ -232,6 +276,8 @@ function registerIpc(
   });
 
   auth.onChange((status) => {
+    // Sign-out or session expiry: unmount the drive and revoke its capability and grant first.
+    if (endsCacheSession(status.phase)) void drive.teardown();
     if (status.phase === 'signed-in') cache.noteUser(status.user?.id ?? null);
     if (status.phase !== 'signed-in') {
       storage.reset();
@@ -280,9 +326,21 @@ function createReadCoordinator(
   });
 }
 
-function createStorageManager(api: BackendApi | null, auth: AuthManager, reads?: ReadCoordinator): StorageManager {
+let mountedAgentInstance: string | null = null;
+
+function createStorageManager(
+  api: BackendApi | null,
+  auth: AuthManager,
+  reads?: ReadCoordinator,
+  onDisconnect?: () => Promise<unknown>
+): StorageManager {
   return new StorageManager({
-    onAccountDisconnected: (accountId) => reads?.forgetAccount(accountId) ?? Promise.resolve(),
+    // Disconnect unmounts the whole virtual drive (simplest safe behavior in Batch 8), then forgets
+    // the account's delegated credential and cached chunks.
+    onAccountDisconnected: async (accountId) => {
+      await onDisconnect?.().catch(() => undefined);
+      await (reads?.forgetAccount(accountId) ?? Promise.resolve());
+    },
     api,
     withAccessToken: (call) => auth.withAccessToken(call),
     openExternal: async (url) => {
@@ -291,6 +349,64 @@ function createStorageManager(api: BackendApi | null, auth: AuthManager, reads?:
         throw new Error('Refusing to open an untrusted URL');
       }
       await shell.openExternal(url);
+    }
+  });
+}
+
+function createVirtualDrive(
+  api: BackendApi | null,
+  auth: AuthManager,
+  agent: AgentManager,
+  listAccounts: () => Promise<boolean>
+): VirtualDriveCoordinator {
+  const config = resolveVfsConfig({
+    env: process.env,
+    platform: process.platform,
+    arch: process.arch,
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    fileExists: isFile
+  });
+  const vfs =
+    'exePath' in config
+      ? new VfsManager({
+          exePath: config.exePath,
+          // No shell, no arguments; secrets only on stdin.
+          spawn: (command, args) => spawn(command, [...args], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+        })
+      : null;
+  return new VirtualDriveCoordinator({
+    vfs,
+    prerequisite: () => {
+      if ('missing' in config) return config.missing;
+      return agent.snapshot().state === 'ready' ? null : 'agent-unavailable';
+    },
+    agent: {
+      loopbackPort: () => agent.loopbackPort(),
+      instanceId: () => agent.instanceId(),
+      post: (path, body, timeoutMs) => agent.post(path, body, timeoutMs)
+    },
+    issueGrant: async () => {
+      if (!api) throw new BackendUnreachableError(false);
+      return auth.withAccessToken((token) => api.issueMetadataGrant(token));
+    },
+    revokeGrant: async () => {
+      if (!api || auth.getStatus().phase !== 'signed-in') return;
+      await auth.withAccessToken((token) => api.revokeMetadataGrant(token));
+    },
+    currentUserId: () => {
+      const status = auth.getStatus();
+      return status.phase === 'signed-in' ? (status.user?.id ?? null) : null;
+    },
+    hasConnectedAccounts: listAccounts,
+    backendOrigin: api?.origin ?? '',
+    driveLetterInUse: (letter) => existsSync(`${letter}:\\`),
+    settings: new DriveSettings(join(app.getPath('userData'), 'virtual-drive.json')),
+    classifyError: (error) => {
+      if (error instanceof SessionExpiredError) return 'session-expired';
+      if (error instanceof BackendUnreachableError) return 'backend-unreachable';
+      if (error instanceof AgentUnavailableError) return 'agent-unavailable';
+      return 'unknown';
     }
   });
 }
@@ -353,6 +469,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   let agent: AgentManager | null = null;
+  let drive: VirtualDriveCoordinator | null = null;
   let agentStopped = false;
 
   void app.whenReady().then(() => {
@@ -362,7 +479,15 @@ if (!app.requestSingleInstanceLock()) {
     agent = createAgentManager();
     const cache = createCacheCoordinator(auth, agent);
     const reads = createReadCoordinator(api, auth, agent, cache);
-    registerIpc(auth, createStorageManager(api, auth, reads), agent, reads, cache);
+    let storage: StorageManager | null = null;
+    const virtualDrive = createVirtualDrive(api, auth, agent, async () => {
+      const result = await storage?.listAccounts();
+      return !result || !result.ok || result.value.length > 0;
+    });
+    drive = virtualDrive;
+    void virtualDrive.init();
+    storage = createStorageManager(api, auth, reads, () => virtualDrive.teardown());
+    registerIpc(auth, storage, agent, reads, cache, virtualDrive);
     mainWindow = createMainWindow();
     void auth.initialize();
     // The agent is independent of sign-in and of the remote backend; cloud browsing works without it.
@@ -373,12 +498,16 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
 
-  // On quit, stop the owned agent gracefully (bounded), then let the app exit.
+  // On quit: stop admitting mounts and unmount the owned drive (revoking its capability and grant),
+  // then stop the owned agent gracefully (bounded), then let the app exit.
   app.on('before-quit', (event) => {
     if (!agent || agentStopped) return;
     event.preventDefault();
     agentStopped = true;
-    void agent.stop().finally(() => app.quit());
+    const owned = agent;
+    void (drive?.close() ?? Promise.resolve())
+      .catch(() => undefined)
+      .finally(() => void owned.stop().finally(() => app.quit()));
   });
 
   app.on('window-all-closed', () => {

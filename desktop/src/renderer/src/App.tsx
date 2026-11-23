@@ -27,6 +27,7 @@ export function App({ api, pollIntervalMs }: AppProps) {
         storage={api.storage}
         agent={api.agent}
         cache={api.cache}
+        vfs={api.vfs}
         pollIntervalMs={pollIntervalMs}
       />
     );

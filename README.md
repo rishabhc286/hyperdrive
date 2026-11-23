@@ -5,13 +5,14 @@ HyperDrive is a Windows desktop application, in early development, that will bri
 Files will stream on demand in 4 MiB chunks and be cached on the local disk, so they don't need
 to be downloaded in full first.
 
-> **Status: accounts + read-only Google Drive and Dropbox browsing.** You can sign in with
+> **Status: read-only browsing, diagnostic reads and a metadata-only drive.** You can sign in with
 > Google (which creates a HyperDrive account), choose a username, then **separately** connect
 > Google Drive and Dropbox accounts and browse their folders and file metadata in one "All
-> storage" view. A local **agent** process starts with the app and reports its status; it does
-> not read, cache or mount anything yet. There is **no file download, streaming, caching or
-> virtual drive yet**. Live Google Drive and Dropbox use has not been tested with real credentials
-> yet. See [docs/progress.md](docs/progress.md).
+> storage" view. A local **agent** does bounded diagnostic reads ("Verify file read") with an
+> encrypted cache for eligible Dropbox reads, and a **WinFsp drive** (default `H:`) shows your
+> accounts, folders and file details in Explorer. **File contents can't be opened through the
+> drive yet** (next batch); there is no streaming, download or writing. Live Google Drive and
+> Dropbox use has not been tested with real credentials yet. See [docs/progress.md](docs/progress.md).
 
 The launch website is a separate project and is not part of this repository.
 
@@ -82,6 +83,21 @@ The launch website is a separate project and is not part of this repository.
   - The cache is not offline access, and nothing has been verified against live Dropbox or Google.
   - Design: [docs/cache.md](docs/cache.md) · [ADR 0003](docs/adr/0003-cache-consistency-and-key-lifecycle.md).
 
+- **Batch 8 (read-only, metadata-only virtual drive):**
+  - A C++ WinFsp program (`vfs/`) mounts a read-only drive (default `H:`, configurable D–Z) on
+    **Overview → Virtual drive → Mount**. The root has one folder per connected account; below
+    are its real folders and file details.
+  - **Contents can't be read through the drive yet**: reads fail immediately with an explicit
+    "not supported" error; writes fail as write-protected.
+  - Authorization is scoped: a 15-minute backend **metadata grant** (metadata routes only) and a
+    per-mount agent **capability** (VFS routes only). The VFS never sees provider tokens, session
+    tokens, cache keys or the agent's secret.
+  - Requires WinFsp (installed by you) and building `vfs\build.cmd`.
+  - Verified on a real WinFsp mount with fixture data and with the real agent against a local
+    stand-in backend; **not** yet with live Google Drive or Dropbox accounts.
+  - Details: [docs/virtual-drive.md](docs/virtual-drive.md) ·
+    [ADR 0004](docs/adr/0004-vfs-transport-and-scoped-metadata-authorization.md).
+
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
 [docs/google-drive.md](docs/google-drive.md) · [docs/dropbox.md](docs/dropbox.md) ·
 [docs/security.md](docs/security.md) · [docs/architecture.md](docs/architecture.md)
@@ -93,7 +109,7 @@ Design and security details: [docs/authentication.md](docs/authentication.md) ·
 - Prefetching, playback/media preview, full-file downloads and throughput metrics. Reads happen
   only through the Verify file read diagnostic.
 - Persistent caching of Google Drive content: no version-pinned ranged reads (see ADR 0003).
-- The WinFsp virtual drive (`vfs/`).
+- Reading file contents through the virtual drive, drive auto-mount, and a bundled VFS/installer.
 - Agent packaging: no bundled Java runtime and no installer. Development uses your JDK 21+.
 - Google OAuth verification: `drive.readonly` is a restricted scope. HyperDrive is unverified
   and runs in Google's Testing mode, with at most 100 test users and a 7-day authorization expiry.
@@ -198,6 +214,7 @@ The Google client secret is used by the backend only; never put it in desktop co
 cd backend;  .\mvnw.cmd verify;  cd ..        # unit + PostgreSQL integration tests (Docker required)
 cd agent;    .\mvnw.cmd verify;  cd ..        # agent unit + real-process tests, builds the jar
 cd desktop;  npm run check;      cd ..        # typecheck, lint, tests (incl. a real agent smoke test if the jar exists), build
+cd vfs;      .\build.cmd;        cd ..        # native VFS build + unit tests (needs VS 2022 C++ and the WinFsp SDK)
 docker compose --env-file .env.example config -q
 ```
 
@@ -238,8 +255,8 @@ not passed).
 backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions,
             Google Drive and Dropbox connections and read-only browsing
 desktop/    Electron + React desktop app
-agent/      Java 21 local agent: authenticated loopback status API (no data plane yet)
-vfs/        Planned WinFsp virtual drive (README only)
+agent/      Java 21 local agent: loopback API, bounded reads, encrypted cache, VFS metadata
+vfs/        C++ WinFsp virtual drive (read-only, metadata only)
 docs/       Architecture, authentication, security, development notes, progress log
 compose.yaml, .env.example
 ```
@@ -251,7 +268,8 @@ HyperDrive is free software, licensed under the **GNU General Public License v3.
 
 - **Your rights:** you may use, study, share and modify it. If you distribute modified versions,
   you must make their source available under the same license.
-- **WinFsp:** the planned virtual drive builds on WinFsp, which is itself licensed under GPLv3
-  with a FLOSS exception.
+- **WinFsp:** the virtual drive links WinFsp's DLL, which is licensed under GPLv3 with a FLOSS
+  exception; WinFsp is installed separately and not redistributed. nlohmann/json (MIT) is used by
+  the VFS ([vfs/README.md](vfs/README.md#third-party-components)).
 - **Dependencies:** they keep their own licenses. Electron, React and Vite use MIT; Spring,
   Jackson and Nimbus use Apache-2.0. Both are compatible with GPL-3.0.

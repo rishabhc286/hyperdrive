@@ -24,3 +24,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Native VFS build output (Batch 8)
+vfs/build/

@@ -4,6 +4,8 @@ import type { SafeUser } from '../../shared/auth';
 import type { StorageApi, StorageProvider } from '../../shared/storage';
 import type { CacheApi } from '../../shared/cache';
 import { CacheMetrics, CacheSettingsPanel } from './CachePanels';
+import type { VirtualDriveApi } from '../../shared/vfs';
+import { VirtualDriveCard } from './VirtualDriveCard';
 import { CloudAccounts } from './CloudAccounts';
 import { FilesBrowser } from './FilesBrowser';
 import { accountTitle } from './storage-format';
@@ -28,6 +30,7 @@ interface SectionViewProps {
   readonly onNavigate: (section: SectionId) => void;
   readonly storage: StorageApi;
   readonly cache: CacheApi;
+  readonly vfs: VirtualDriveApi;
   readonly accounts: AccountsState;
   readonly onReloadAccounts: () => void;
   readonly connection: ConnectionFlow;
@@ -83,7 +86,8 @@ function Overview({
   accounts,
   agentStatus,
   agentRestarting,
-  onRestartAgent
+  onRestartAgent,
+  vfs
 }: SectionViewProps) {
   const connected = accounts.accounts;
   return (
@@ -133,13 +137,7 @@ function Overview({
 
         <AgentStatusCard status={agentStatus} restarting={agentRestarting} onRestart={onRestartAgent} />
 
-        <article className="card" aria-labelledby="drive-card-title">
-          <h2 id="drive-card-title">Virtual drive</h2>
-          <p className="empty-title">Virtual drive not implemented yet.</p>
-          <p className="muted">
-            No Windows drive letter is created in this build, and no file content is cached on this PC.
-          </p>
-        </article>
+        <VirtualDriveCard vfs={vfs} />
       </div>
     </section>
   );
@@ -173,7 +171,8 @@ function Performance({ cache }: { cache: CacheApi }) {
       <h1 id="performance-title">Performance</h1>
       <p className="muted small">
         Real counters from the local agent's chunk cache. They come only from “Verify file read” diagnostics today:
-        there is no playback, prefetching or mounted drive yet, and no throughput is measured.
+        the virtual drive shows metadata only (no content reads yet), there is no playback or prefetching, and no
+        throughput is measured.
       </p>
       <CacheMetrics cache={cache} />
     </section>
@@ -216,7 +215,7 @@ function Settings({
           {agentStatus?.state === 'ready' && agentStatus.agentVersion ? ` (version ${agentStatus.agentVersion})` : ''}
         </dd>
         <dt>Virtual drive</dt>
-        <dd>Not implemented yet</dd>
+        <dd>Read-only, metadata only (manage it on Overview)</dd>
       </dl>
     </section>
   );

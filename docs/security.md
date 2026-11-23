@@ -228,6 +228,39 @@ Details: [cache.md](cache.md) and [ADR 0003](adr/0003-cache-consistency-and-key-
 - **Renderer bridge:** IPC exposes only status counters, the budget setter (validated) and clear.
   It never exposes paths, keys or arbitrary deletion.
 
+## Virtual drive (Batch 8)
+
+Details: [virtual-drive.md](virtual-drive.md) and
+[ADR 0004](adr/0004-vfs-transport-and-scoped-metadata-authorization.md).
+
+- **What the VFS process holds:** the agent's loopback port and a per-mount **capability** only.
+  Never provider tokens, HyperDrive session or refresh tokens, cache keys, the agent's launch
+  secret or the backend grant. Verified in tests (desktop, agent) and by the real-mount check.
+- **Capability:** 256-bit, created per mount by the agent, hash-only storage, constant-time
+  comparison, delivered on the VFS's stdin (bounded 4 KiB bootstrap; never arguments,
+  environment, files, logs, events or React). Accepted only on `/local/v1/vfs/session|accounts|list`,
+  where the launch secret is refused. Revoked on unmount, logout, quit, remount or agent restart;
+  the VFS's 10 s heartbeat turns revocation into an unmount.
+- **Backend metadata grant:** `hdm_`, 256-bit, SHA-256 at rest (`metadata_grants`), 15-minute
+  TTL, one per device session, deleted on logout/session revocation. Its principal has only
+  `METADATA_READ`, required by `/api/v1/vfs/**` and accepted nowhere else; session tokens are
+  refused there. It can't delegate credentials, change accounts, revoke, or reach any other API.
+  Rate-limited per address (`vfsBrowse`, 600/min; issuance shares the read-credentials bucket).
+- **Ownership:** the VFS endpoints reuse the app's owner-checked services; another user's account
+  id is 404. Responses omit emails, display names, hashes and provider cursors.
+- **No proxying:** the agent calls exactly two fixed backend routes on an origin validated at
+  mount time (https, or http to loopback only); redirects refused; bounded sizes.
+- **Process ownership:** spawned with `shell:false` and no arguments from a trusted path
+  (development build or an absolute `HYPERDRIVE_VFS_EXE`); strict event parsing; 30 s startup
+  limit; only the owned child is killed, never by name; other WinFsp filesystems untouched.
+- **Mount safety:** an occupied drive letter is refused (checked by the desktop and by the VFS),
+  never replaced. Read-only volume and a read/execute-only security descriptor.
+- **Explorer:** "Open in Explorer" opens only the confirmed mount root computed in the main
+  process; the renderer supplies no path.
+- **Limits:** metadata in Explorer can be ~30 s stale; mounted metadata doesn't prove current
+  permission at the provider beyond the backend's listing at fetch time. Crash cleanup is designed
+  (stdin EOF → unmount; WinFsp removes a dead process's volume) but not tested with real crashes.
+
 ## Desktop
 
 - **Electron hardening (Batch 1):** sandbox, context isolation, no Node in the renderer, strict

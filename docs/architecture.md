@@ -80,13 +80,23 @@ process.
 - See [ADR 0002](adr/0002-provider-access-token-delegation.md) and
   [local-agent.md](local-agent.md#bounded-read-contract-batch-6).
 
-**Still planned:** prefetching, throughput metrics, and the VFS ↔ agent transport (an open
-decision; see [ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md)).
+**Still planned:** prefetching, throughput metrics, and the transport for content reads through
+the drive (Batch 9).
 
-### VFS: planned
+### VFS (Batch 8): read-only, metadata only
 
-C++ WinFsp filesystem (`vfs/`) that mounts the read-only drive and forwards every request to the
-local agent.
+- **What:** C++ WinFsp filesystem (`vfs/`, `hyperdrive-vfs.exe`) started by the desktop's
+  `VfsManager` (no shell, no arguments, bootstrap on stdin). It mounts a read-only drive letter
+  in the user's session; no service.
+- **Transport:** authenticated loopback HTTP to the agent via WinHTTP, behind a narrow C++
+  interface ([ADR 0004](adr/0004-vfs-transport-and-scoped-metadata-authorization.md)). It closes
+  ADR 0001's question for **metadata only**.
+- **Authorization chain:** session token → backend **metadata grant** (`/api/v1/vfs/**` only,
+  15 min) held by the agent → per-mount **capability** (agent's `/local/v1/vfs/session|accounts|list`
+  only) held by the VFS.
+- **Data:** one directory listing at a time, assembled by the agent from backend pages (bounded),
+  snapshotted and enumerated by the VFS with WinFsp markers. Names are mapped deterministically.
+- **Content reads:** not implemented (`STATUS_NOT_SUPPORTED`). Details: [virtual-drive.md](virtual-drive.md).
 
 ### Cloud storage (Batches 3–4): implemented for Google Drive and Dropbox metadata
 
@@ -178,7 +188,7 @@ They are **never** stored in Redis or PostgreSQL, and the backend never sees the
 | Persistent encrypted chunk cache | **Bypassed: never cached** (`provider_not_version_bound`) | Implemented for `rev:` reads confirmed by `Dropbox-API-Result`; unconfirmed reads served uncached |
 | Streaming / playback / prefetching | **Not implemented** | **Not implemented** |
 | Writes (upload/edit/rename/move/delete) | **Not implemented** | **Not implemented** |
-| Mounted drive (WinFsp) | **Not implemented** | **Not implemented** |
+| Mounted drive (WinFsp, Batch 8) | Folders and files with size/time; native documents and shortcuts not shown; **no content reads** | Folders and files with size/time; **no content reads** |
 | Credentials in the agent | Delegated access token only, memory-only, ≤ 20 min retention | Delegated access token only, memory-only, ≤ 20 min retention |
 | Live end-to-end verification | Not yet (no OAuth client); reads tested only against local mock servers | Not yet (no Dropbox app); reads tested only against local mock servers |
 

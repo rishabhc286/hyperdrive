@@ -119,7 +119,7 @@ class IdentityAndSchemaTest extends AuthIntegrationTest {
 
     @Test
     void migrationsAreAppliedAndValid() {
-        assertThat(flyway.info().applied()).extracting(m -> m.getVersion().getVersion()).containsExactly("1", "2", "3");
+        assertThat(flyway.info().applied()).extracting(m -> m.getVersion().getVersion()).containsExactly("1", "2", "3", "4");
         assertThat(flyway.info().pending()).isEmpty();
         flyway.validate();
     }

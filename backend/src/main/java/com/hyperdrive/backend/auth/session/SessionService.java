@@ -148,6 +148,7 @@ public class SessionService {
                 """)
                 .param("now", utc(now)).param("reason", reason).param("id", sessionId).update();
         jdbc.sql("DELETE FROM access_tokens WHERE session_id = :id").param("id", sessionId).update();
+        jdbc.sql("DELETE FROM metadata_grants WHERE session_id = :id").param("id", sessionId).update();
     }
 
     private TokenResponse issueAccessToken(UUID sessionId, Instant now, String refreshToken, Instant refreshExpiresAt) {

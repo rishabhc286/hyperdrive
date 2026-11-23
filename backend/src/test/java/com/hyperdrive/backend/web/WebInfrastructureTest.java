@@ -47,7 +47,7 @@ class WebInfrastructureTest {
 
     @Test
     void rateLimitFilterReturns429WithRetryAfterForSensitiveEndpoints() throws Exception {
-        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 100);
+        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 100);
         RateLimitFilter filter = new RateLimitFilter(new RateLimiter(clock, props.window(), 100), props);
 
         int[] statuses = new int[3];
@@ -73,7 +73,7 @@ class WebInfrastructureTest {
 
     @Test
     void storageConnectionStartPollingAndBrowserLegAreRateLimited() throws Exception {
-        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 9, 9, 9, 9, 9, 1, 1, 2, 3, 4, 100);
+        RateLimitProperties props = new RateLimitProperties(true, Duration.ofMinutes(1), 9, 9, 9, 9, 9, 1, 1, 2, 3, 4, 5, 100);
         RateLimitFilter filter = new RateLimitFilter(new RateLimiter(clock, props.window(), 100), props);
         record Case(String method, String path, int allowed) {
         }

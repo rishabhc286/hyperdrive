@@ -4,6 +4,7 @@
  */
 import type { AgentApi } from './agent';
 import type { CacheApi } from './cache';
+import type { VirtualDriveApi } from './vfs';
 import type { AuthApi } from './auth';
 import type { StorageApi } from './storage';
 
@@ -30,4 +31,5 @@ export interface HyperdriveApi {
   readonly storage: StorageApi;
   readonly agent: AgentApi;
   readonly cache: CacheApi;
+  readonly vfs: VirtualDriveApi;
 }

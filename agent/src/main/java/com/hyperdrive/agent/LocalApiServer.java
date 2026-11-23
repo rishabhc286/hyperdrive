@@ -58,6 +58,21 @@ final class LocalApiServer {
         Response handle(JsonNode body);
     }
 
+    /**
+     * Batch 8: a route authorized ONLY by a virtual-drive mount capability (never by the launch
+     * secret, which in turn never authorizes these routes).
+     */
+    @FunctionalInterface
+    interface CapabilityRoute {
+        Response handle(com.hyperdrive.agent.vfs.MountRegistry.Mount mount, JsonNode body);
+    }
+
+    /** Resolves an Authorization header to a live mount, or null. */
+    @FunctionalInterface
+    interface CapabilityAuthenticator {
+        com.hyperdrive.agent.vfs.MountRegistry.Mount authenticate(String authorizationHeader);
+    }
+
     private final HttpServer server;
     private final ExecutorService executor;
     private final byte[] expectedAuthorization;
@@ -65,9 +80,12 @@ final class LocalApiServer {
     private final AgentLog log;
     private final Map<String, GetRoute> gets;
     private final Map<String, PostRoute> posts;
+    private final Map<String, CapabilityRoute> capabilityPosts;
+    private final CapabilityAuthenticator capabilities;
 
     private LocalApiServer(HttpServer server, ExecutorService executor, String secret, AgentLog log,
-            Map<String, GetRoute> gets, Map<String, PostRoute> posts) {
+            Map<String, GetRoute> gets, Map<String, PostRoute> posts, Map<String, CapabilityRoute> capabilityPosts,
+            CapabilityAuthenticator capabilities) {
         this.server = server;
         this.executor = executor;
         this.expectedAuthorization = ("Bearer " + secret).getBytes(StandardCharsets.US_ASCII);
@@ -75,9 +93,17 @@ final class LocalApiServer {
         this.log = log;
         this.gets = Map.copyOf(gets);
         this.posts = Map.copyOf(posts);
+        this.capabilityPosts = Map.copyOf(capabilityPosts);
+        this.capabilities = capabilities;
     }
 
     static LocalApiServer start(String secret, Map<String, GetRoute> gets, Map<String, PostRoute> posts, AgentLog log)
+            throws IOException {
+        return start(secret, gets, posts, Map.of(), header -> null, log);
+    }
+
+    static LocalApiServer start(String secret, Map<String, GetRoute> gets, Map<String, PostRoute> posts,
+            Map<String, CapabilityRoute> capabilityPosts, CapabilityAuthenticator capabilities, AgentLog log)
             throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0), 32);
         // Reads block a worker while the provider answers. A ThreadPoolExecutor only grows past its core
@@ -91,7 +117,8 @@ final class LocalApiServer {
                 }, new ThreadPoolExecutor.AbortPolicy());
         executor.allowCoreThreadTimeOut(true);
         server.setExecutor(executor);
-        LocalApiServer api = new LocalApiServer(server, executor, secret, log, gets, posts);
+        LocalApiServer api = new LocalApiServer(server, executor, secret, log, gets, posts, capabilityPosts,
+                capabilities);
         server.createContext("/", api::handle);
         server.start();
         return api;
@@ -129,11 +156,16 @@ final class LocalApiServer {
                 respond(exchange, new Response.Json(403, error("forbidden")));
                 return;
             }
+            String path = exchange.getRequestURI().getRawPath();
+            CapabilityRoute capabilityRoute = capabilityPosts.get(path);
+            if (capabilityRoute != null) {
+                handleCapability(exchange, capabilityRoute);
+                return;
+            }
             if (!authorized(exchange.getRequestHeaders().getFirst("Authorization"))) {
                 respond(exchange, new Response.Json(401, error("unauthorized")));
                 return;
             }
-            String path = exchange.getRequestURI().getRawPath();
             if (exchange.getRequestURI().getRawQuery() != null) {
                 respond(exchange, new Response.Json(400, error("query_not_allowed")));
                 return;
@@ -166,6 +198,30 @@ final class LocalApiServer {
         } catch (RuntimeException e) {
             log.warn("Local API request failed: " + e.getClass().getSimpleName());
         }
+    }
+
+    /** Mount-capability routes: POST with a bounded JSON body, no query; the launch secret is not accepted. */
+    private void handleCapability(HttpExchange exchange, CapabilityRoute route) throws IOException {
+        com.hyperdrive.agent.vfs.MountRegistry.Mount mount =
+                capabilities.authenticate(exchange.getRequestHeaders().getFirst("Authorization"));
+        if (mount == null) {
+            respond(exchange, new Response.Json(401, error("unauthorized")));
+            return;
+        }
+        if (exchange.getRequestURI().getRawQuery() != null) {
+            respond(exchange, new Response.Json(400, error("query_not_allowed")));
+            return;
+        }
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            respond(exchange, new Response.Json(405, error("method_not_allowed")));
+            return;
+        }
+        JsonNode body = readJson(exchange);
+        if (body == null) {
+            respond(exchange, new Response.Json(400, error("invalid_request")));
+            return;
+        }
+        respond(exchange, route.handle(mount, body));
     }
 
     /** Bounded JSON body: correct content type, declared length within the limit, no chunking. */

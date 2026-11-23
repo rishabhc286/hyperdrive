@@ -42,7 +42,7 @@ describe.skipIf(!isFile(jar))('local agent smoke test (real Java process)', () =
     const ready = await manager.getStatus();
     expect(ready.state).toBe('ready');
     expect(ready.agentVersion).toBe('0.1.0-SNAPSHOT');
-    expect(ready.capabilities).toEqual({ providerReads: true, rangeReads: true, chunkCache: true, virtualDrive: false });
+    expect(ready.capabilities).toEqual({ providerReads: true, rangeReads: true, chunkCache: true, virtualDrive: true });
 
     // Real credential + read endpoints of the real jar. A read at EOF needs no provider call, so this
     // exercises the local binary transport without any network access.

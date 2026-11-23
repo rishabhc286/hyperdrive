@@ -1,5 +1,95 @@
 # Progress
 
+## Batch 8: read-only, metadata-only WinFsp virtual drive (2026-11-23)
+
+### Foundation check before starting
+
+- Repository at `d1cea6b` (verification checkpoint), clean.
+- **Checkpoint status:** live checks still **not executed** for Google sign-in, Drive, Dropbox,
+  reads and provider caching (no OAuth client or Dropbox app configured). Passed live: Windows
+  `safeStorage` key protection. Everything else: mocks only.
+- **Claims verified against code:** Electron/React desktop, Spring Boot backend + PostgreSQL,
+  sign-in/onboarding, separate Drive/Dropbox connections, metadata browsing, supervised agent with
+  authenticated loopback API, token delegation (refresh tokens stay on the backend), bounded reads,
+  encrypted 4 MiB cache with conservative eligibility (Google bypassed, Dropbox `rev`-confirmed).
+- **Prerequisites on this machine (nothing installed):** Windows 11 x64; VS 2022 Build Tools
+  17.14 with MSVC 14.44 and bundled CMake/Ninja; Windows SDK 10.0.22621; WinFsp 2.1 (2025) runtime
+  **and** Developer SDK; Docker running; Java 25 (agent targets 21).
+
+### Completed
+
+- **Design:** [virtual-drive.md](virtual-drive.md) and
+  [ADR 0004](adr/0004-vfs-transport-and-scoped-metadata-authorization.md): loopback HTTP via
+  WinHTTP behind a narrow interface (metadata only; not a decision for content), per-mount agent
+  capability, short-lived backend metadata grant.
+- **Backend:**
+  - Flyway `V4__metadata_grants.sql`; `hdm_` grants (hash-only, 15 min, one per session, deleted
+    on logout); `MetadataPrincipal` with only `METADATA_READ`.
+  - `POST/DELETE /api/v1/metadata-grants` (session), `GET /api/v1/vfs/accounts` and
+    `GET /api/v1/vfs/accounts/{id}/files` (grant only; owner-checked; no emails, names, hashes or
+    cursors). Session tokens refused on `/api/v1/vfs/**`; grants refused everywhere else.
+  - Rate-limit bucket `vfsBrowse` (600/min).
+- **Agent:** `vfs/MountRegistry` (generation + hashed `hdv_` capability, memory only),
+  `BackendMetadataClient` (two fixed routes, HTTP/1.1, no redirects, bounded, strict),
+  `VfsMetadataService` (complete listings; 10,000 entries / 100 pages / 30 s / 4 concurrent;
+  no silent truncation). Admin routes `/local/v1/vfs/mount|mount/grant|mount/revoke|status`
+  (launch secret) and capability-only routes `/local/v1/vfs/session|accounts|list`.
+  Capability `virtualDrive` is `true`.
+- **Native VFS (`vfs/`, C++20/CMake, x64):** name mapping, snapshots and marker enumeration,
+  strict agent client, WinHTTP transport, path resolution with a 30 s snapshot cache and bounded
+  concurrency, read-only WinFsp volume (writes → `STATUS_MEDIA_WRITE_PROTECTED`, non-empty reads →
+  `STATUS_NOT_SUPPORTED`, EOF → `STATUS_END_OF_FILE`), stdin bootstrap, JSON events, heartbeat
+  self-unmount, opt-in fixture mode. nlohmann/json 3.11.3 pinned by SHA-256.
+- **Desktop:** `VfsManager` (no shell/args, strict events, 30 s startup, owned-child-only kill),
+  `VirtualDriveCoordinator` (grant → capability → process; renewal every 10 min; teardown on
+  unmount, logout, disconnect, agent restart, renewal failure, quit), drive-letter settings (D–Z),
+  IPC (`vfs.getStatus|mount|unmount|openInExplorer|setDriveLetter`), Virtual Drive card.
+  Disconnect unmounts the whole drive.
+
+### Fixes found on the way
+
+- **Stale UI copy:** the agent card still said it "doesn't cache anything or create a drive yet"
+  (wrong since Batch 7); it now states what the agent does from its capabilities.
+- **Agent HTTP client:** pinned to HTTP/1.1 for backend calls (no `h2c` upgrade negotiation on
+  `http://` loopback origins).
+- **Test harness:** the first real-chain check used blocking fs calls in the process hosting the
+  stand-in backend; it now uses async calls (the product behaved correctly: it reported
+  `backend_unavailable` after its timeout).
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| Backend `mvnw verify` | **227 passed** (223 at the checkpoint + 4 grant tests; migration check updated for V4) |
+| Agent `mvnw verify` | **91 passed** (+ `VfsApiTest` 5, `BackendMetadataClientTest` 3) |
+| Desktop typecheck, lint, build | Pass |
+| Desktop Vitest | **284 passed** (22 files), incl. the real-jar smoke test |
+| Native build (`vfs\build.cmd`, `/W4 /WX`) and `hdvfs_tests` | **Pass; 28 tests** |
+| Real WinFsp mount, fixture data (`fixture-mount-check.mjs`) | **Passed live on this machine: 24/24** (listing, mapped names, collisions, Unicode, exclusions, sizes, mtimes, nested + 300-entry dirs, write/create/mkdir/delete/rename rejected, non-empty read fails, zero-byte read empty, unmount, process exit, letter released) |
+| Occupied drive letter (temporary `subst`) | **Passed live:** `drive-letter-in-use`, existing mapping untouched |
+| Real agent jar + real VFS, normal mode, local stand-in backend (`agent-mount-check.mjs`) | **Passed live: 13/13** (capability auth, grant-only backend routes, listing, revocation → self-unmount within the heartbeat, no secrets in logs) |
+| Desktop `VfsManager` (compiled) + real VFS + real agent, stand-in backend | **Passed live: 7/7** (scratch harness, not committed) |
+| Live Google Drive / Dropbox through the mount | **Not executed:** no OAuth client / Dropbox app configured |
+| Electron UI-driven mount with a signed-in user | **Not executed:** needs live sign-in (same blocker); covered by coordinator/card tests with mocks |
+| Desktop or VFS crash cleanup | **Not executed** (designed: stdin EOF → unmount; WinFsp removes a dead process's volume) |
+
+### Remaining limitations
+
+- No content reads through the drive; Explorer shows files as offline/read-only.
+- Shortcuts, native Google documents, files of unknown size and shared drives aren't shown.
+- Metadata up to ~30 s stale; listings over 10,000 entries fail visibly.
+- Callbacks block during listing fetches (bounded timeouts); no asynchronous WinFsp completion.
+- Disconnect unmounts the whole drive. No auto-mount, service or installer; dev-build exe only
+  (or `HYPERDRIVE_VFS_EXE`).
+
+### Prerequisites for Batch 9 (content through the drive)
+
+- Live verification of Batch 6–8 with real accounts (runbook: [live-verification.md](live-verification.md)).
+- Decide the content transport and whether the mount capability may trigger reads (ADR 0001/0004).
+- Map WinFsp `Read` onto the bounded read and cache path (Google uncached), with cancellation,
+  per-open revalidation and the bounded authorization-renewal policy proposed at the checkpoint.
+- Decide how Explorer previews/thumbnails should behave once content is readable.
+
 ## Verification checkpoint before Batch 8 (2026-11-23)
 
 Not a feature batch: decisions on Disconnect and revocation, targeted fixes found by auditing, and

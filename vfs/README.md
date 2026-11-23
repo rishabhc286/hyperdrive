@@ -1,18 +1,52 @@
-# HyperDrive virtual filesystem (planned, not implemented)
+# hyperdrive-vfs (Batch 8): read-only, metadata-only WinFsp drive
 
-This directory has no code yet. It records what the virtual filesystem component will do.
+C++20, CMake, **Windows x64 only**. Full documentation: [docs/virtual-drive.md](../docs/virtual-drive.md);
+design: [ADR 0004](../docs/adr/0004-vfs-transport-and-scoped-metadata-authorization.md).
 
-The VFS will be a **C++** user-mode filesystem built on **[WinFsp](https://winfsp.dev)**
-(GPLv3 with a FLOSS exception). Planned responsibilities:
+## Build
 
-- Mount a **read-only** virtual drive in Windows File Explorer for the signed-in user.
-- Answer Windows filesystem requests (open, directory enumeration, get-info, read, close) by
-  asking the local agent (`agent/`). It will not talk to cloud providers directly.
-- Report errors accurately to Windows (for example, offline or permission-denied) instead of
-  returning incorrect data.
-- Unmount cleanly on exit and recover from agent restarts.
+```powershell
+.\build.cmd      # vcvars64 (via vswhere) → CMake/Ninja → build\hyperdrive-vfs.exe → ctest
+```
 
-Write support is out of scope for the first release.
+Prerequisites (not installed by the build): Visual Studio 2022 (Build Tools) with the C++ x64
+tools and bundled CMake/Ninja; WinFsp with the **Developer** feature
+(`C:\Program Files (x86)\WinFsp\{inc,lib}`; override with `-DWINFSP_DIR=...`). The WinFsp DLL is
+delay-loaded and located at runtime with `FspLoad`, as in the WinFsp samples.
 
-Build prerequisites (expected): Visual Studio 2022 C++ build tools, the WinFsp SDK
-(installed with WinFsp's "Developer" feature) and CMake.
+## Layout
+
+| Path | Contents |
+| --- | --- |
+| `src/core/text.*` | UTF-8/16 conversion, stable FNV-1a suffixes, case-insensitive ordinal compare |
+| `src/core/naming.*` | Windows name sanitization and collision suffixes |
+| `src/core/snapshot.*` | Directory snapshots, metadata conversion, marker-based enumeration |
+| `src/core/agent_client.*` | Strictly validated calls to the agent's VFS routes; fault mapping |
+| `src/core/transport.hpp`, `winhttp_transport.cpp` | Narrow agent transport; WinHTTP to 127.0.0.1 only |
+| `src/core/tree.*` | Path resolution, 30 s snapshot cache, bounded concurrent fetches |
+| `src/core/bootstrap.*` | Strict stdin bootstrap parsing |
+| `src/core/status.*` | NTSTATUS decisions (read-only, honest reads, fault mapping) |
+| `src/core/fixture.*` | Explicit opt-in fixture data (`--fixture-mount`), labeled as test data |
+| `src/fs/filesystem.*` | WinFsp callbacks and volume parameters |
+| `src/main.cpp` | Process protocol, mount lifecycle, heartbeat |
+| `tests/` | Native unit tests (`hdvfs_tests`), opt-in real-mount checks (`*.mjs`) |
+
+## Process protocol
+
+- Normal mode: **no arguments**; one JSON bootstrap line on stdin (≤ 4 KiB, 10 s):
+  `{"protocolVersion":1,"agentPort":<1024-65535>,"capability":"hdv_…","mount":{"driveLetter":"H"}}`.
+- stdout: one JSON event per line (`started`, `agent-authenticated`, `volume-created`, `mounted`,
+  `unmounted{reason}`, `failed{code}`), never secrets. stderr: diagnostics with status numbers and
+  fixed codes only.
+- stdin stays open: `unmount` or EOF unmounts and exits.
+- Fixture mode (manual testing only): `hyperdrive-vfs.exe --fixture-mount <D-Z>`.
+
+## Third-party components
+
+| Component | Use | License |
+| --- | --- | --- |
+| [WinFsp](https://winfsp.dev) 2.1 (2025 release; tested) | Headers/import library at build time; runtime DLL and driver installed separately by the user | GPLv3 with a FLOSS exception |
+| [nlohmann/json](https://github.com/nlohmann/json) 3.11.3 | JSON parsing (header-only; fetched by CMake, pinned by SHA-256) | MIT |
+| Windows SDK (WinHTTP, Win32) and MSVC runtime | System APIs | Microsoft system libraries |
+
+HyperDrive itself stays GPL-3.0-only.

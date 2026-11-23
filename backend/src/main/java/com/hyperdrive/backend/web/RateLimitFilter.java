@@ -61,6 +61,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
             // Provider-token delegation: its own, tighter bucket.
             bucket = ACCOUNTS + "/read-credentials";
             limit = properties.readCredentials();
+        } else if ("POST".equals(request.getMethod()) && path.equals("/api/v1/metadata-grants")) {
+            bucket = "/api/v1/metadata-grants";
+            limit = properties.readCredentials();
+        } else if (path.startsWith("/api/v1/vfs/")) {
+            // Virtual-drive metadata from the local agent: Explorer browsing is bursty.
+            bucket = "/api/v1/vfs";
+            limit = properties.vfsBrowse();
         } else if (path.equals(ACCOUNTS) || path.startsWith(ACCOUNTS + "/")) {
             bucket = ACCOUNTS;
             limit = properties.browse();

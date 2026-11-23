@@ -39,7 +39,11 @@ export type AgentPostPath =
   | '/local/v1/cache/session'
   | '/local/v1/cache/session/end'
   | '/local/v1/cache/budget'
-  | '/local/v1/cache/clear';
+  | '/local/v1/cache/clear'
+  // Batch 8: virtual-drive mount capability (administration; launch secret)
+  | '/local/v1/vfs/mount'
+  | '/local/v1/vfs/mount/grant'
+  | '/local/v1/vfs/mount/revoke';
 
 export interface AgentPostResponse {
   readonly status: number;
@@ -163,6 +167,14 @@ export class AgentManager {
       await this.statusInFlight;
     }
     return this.snapshot();
+  }
+
+  /**
+   * The ready agent's loopback port (not a secret). Main process only: handed to the owned VFS
+   * process together with its mount capability, never to the renderer.
+   */
+  loopbackPort(): number | null {
+    return this.state === 'ready' ? (this.current?.port ?? null) : null;
   }
 
   /** The ready agent's instance id; changes on every (re)start, so callers can drop stale handles. */

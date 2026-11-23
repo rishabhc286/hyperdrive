@@ -4,6 +4,9 @@ import com.hyperdrive.backend.auth.desktop.DesktopLoginHandlers;
 import com.hyperdrive.backend.auth.desktop.TransactionBoundAuthorizationRequests;
 import com.hyperdrive.backend.auth.session.SessionPrincipal;
 import com.hyperdrive.backend.auth.session.SessionService;
+import com.hyperdrive.backend.auth.SecureTokens;
+import com.hyperdrive.backend.vfs.MetadataGrantService;
+import com.hyperdrive.backend.vfs.MetadataPrincipal;
 import com.hyperdrive.backend.config.ConditionalOnAuthEnabled;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -93,6 +96,8 @@ public class AuthSecurityConfig {
                                 "/api/v1/auth/desktop/transactions",
                                 "/api/v1/auth/desktop/exchange",
                                 "/api/v1/auth/refresh").permitAll()
+                        // Virtual-drive metadata: only a metadata grant (never a session token).
+                        .requestMatchers("/api/v1/vfs/**").hasAuthority(MetadataPrincipal.AUTHORITY_METADATA_READ)
                         // Reachable before onboarding: profile, onboarding and logout only.
                         .requestMatchers(HttpMethod.GET, "/api/v1/me").hasAuthority(SessionPrincipal.AUTHORITY_USER)
                         .requestMatchers(HttpMethod.POST, "/api/v1/me/onboarding", "/api/v1/auth/logout")
@@ -125,8 +130,12 @@ public class AuthSecurityConfig {
 
     /** Resolves HyperDrive opaque tokens locally against the database (no remote introspection). */
     @Bean
-    OpaqueTokenIntrospector hyperdriveTokenIntrospector(SessionService sessions) {
-        return token -> sessions.authenticate(token)
-                .orElseThrow(() -> new BadOpaqueTokenException("Invalid access token"));
+    OpaqueTokenIntrospector hyperdriveTokenIntrospector(SessionService sessions, MetadataGrantService grants) {
+        return token -> {
+            if (SecureTokens.METADATA_GRANT.isWellFormed(token)) {
+                return grants.authenticate(token).orElseThrow(() -> new BadOpaqueTokenException("Invalid grant"));
+            }
+            return sessions.authenticate(token).orElseThrow(() -> new BadOpaqueTokenException("Invalid access token"));
+        };
     }
 }

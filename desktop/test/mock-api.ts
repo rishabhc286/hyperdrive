@@ -1,4 +1,5 @@
 import type { CacheApi, CacheStatusView } from '../src/shared/cache';
+import type { VirtualDriveApi, VirtualDriveStatus } from '../src/shared/vfs';
 import { act } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { AuthApi, AuthStatus, SafeUser } from '../src/shared/auth';
@@ -42,6 +43,7 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
   const storage = createMockStorage();
   const agent = createMockAgent();
   const cache = createMockCache();
+  const vfs = createMockVfs();
 
   const api: HyperdriveApi = {
     checkBackendHealth: vi.fn(() =>
@@ -50,7 +52,8 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
     auth,
     storage,
     agent: agent.api,
-    cache
+    cache,
+    vfs: vfs.api
   };
 
   return {
@@ -59,6 +62,7 @@ export function createMockApi(initial: AuthStatus, health: BackendHealth | 'pend
     storage,
     agent,
     cache,
+    vfs,
     push(next: AuthStatus) {
       current = next;
       act(() => listener?.(next));
@@ -89,6 +93,45 @@ export const CACHE_READY: CacheStatusView = {
   bypasses: { provider_not_version_bound: 4 },
   lastCleanup: null
 };
+
+export const VFS_READY: VirtualDriveStatus = {
+  state: 'ready',
+  driveLetter: 'H',
+  phase: null,
+  error: null,
+  prerequisite: null
+};
+
+/** Fake virtual-drive bridge; `emit` simulates a main-process status push. */
+export function createMockVfs(initial: VirtualDriveStatus = VFS_READY) {
+  let listener: ((s: VirtualDriveStatus) => void) | null = null;
+  let current = initial;
+  const api = {
+    getStatus: vi.fn<VirtualDriveApi['getStatus']>(() => Promise.resolve(current)),
+    mount: vi.fn<VirtualDriveApi['mount']>(() => Promise.resolve((current = { ...current, state: 'mounted', phase: 'mounted' }))),
+    unmount: vi.fn<VirtualDriveApi['unmount']>(() => Promise.resolve((current = { ...current, state: 'ready', phase: null }))),
+    openInExplorer: vi.fn<VirtualDriveApi['openInExplorer']>(() => Promise.resolve({ ok: true, value: null })),
+    setDriveLetter: vi.fn<VirtualDriveApi['setDriveLetter']>((input) =>
+      Promise.resolve({ ok: true, value: (current = { ...current, driveLetter: input.letter }) })
+    ),
+    onChange: vi.fn<VirtualDriveApi['onChange']>((l) => {
+      listener = l;
+      return () => {
+        listener = null;
+      };
+    })
+  };
+  return {
+    api,
+    set(next: VirtualDriveStatus) {
+      current = next;
+    },
+    emit(next: VirtualDriveStatus) {
+      current = next;
+      listener?.(next);
+    }
+  };
+}
 
 export function createMockCache() {
   return {

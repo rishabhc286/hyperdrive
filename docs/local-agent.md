@@ -23,7 +23,7 @@ starts and owns it, talks to it over an authenticated loopback API, and shows it
 | Data directory | `<Electron userData>/agent`, computed by Electron and passed in the bootstrap. The agent creates it and takes an exclusive OS lock on `agent.lock`. No cache, no log files, nothing else is written. |
 | Java discovery (development) | `HYPERDRIVE_AGENT_JAVA` (absolute path) → `JAVA_HOME\bin\java.exe` → `java` on `PATH`. Then a `java -version` preflight requires **≥ 21**. Nothing is downloaded or installed. |
 | Production packaging | **Not done.** A packaged app has no bundled agent or JRE and reports `not-packaged` (unless `HYPERDRIVE_AGENT_JAR` is set). Bundling a runtime is installer work; a permanent user-installed Java is **not** the intended end-user requirement. |
-| Future native VFS | This API is a control/status plane only. A C++ WinFsp client will need its own authenticated, high-throughput channel and a credential/delegation design ([ADR 0001](adr/0001-local-agent-transport-and-content-boundary.md)). No content endpoints exist. |
+| Native VFS (Batch 8) | The C++ WinFsp process calls three **capability-scoped** routes (below) over the same loopback server for metadata. Content reads through the drive need a separate decision (Batch 9). See [ADR 0004](adr/0004-vfs-transport-and-scoped-metadata-authorization.md). |
 
 ## Build and run (Windows PowerShell)
 
@@ -236,10 +236,38 @@ Successful reads also carry:
 **Fetch size:** eligible misses fetch whole aligned 4 MiB chunks (at most two per read), while
 bypassed reads fetch exactly the requested range. Details: [cache.md](cache.md).
 
+## Virtual-drive routes (Batch 8)
+
+Two separate credentials, neither accepted on the other's routes:
+
+| Route | Credential | Purpose |
+| --- | --- | --- |
+| `POST /local/v1/vfs/mount` | launch secret | `{userId, backendOrigin, grant, grantExpiresAt}` → `201 {generation, capability}`. Replaces any previous mount. `backendOrigin`: https, or http to 127.0.0.1/localhost/[::1]; origin only. `grant`: `hdm_…`, unexpired. |
+| `POST /local/v1/vfs/mount/grant` | launch secret | `{generation, grant, grantExpiresAt}`: renew the backend grant of the current mount (404 for an old generation) |
+| `POST /local/v1/vfs/mount/revoke` | launch secret | `{}` → `{revoked}` |
+| `GET /local/v1/vfs/status` | launch secret | `{active, generation}` |
+| `POST /local/v1/vfs/session` | mount capability | `{}` → `{protocolVersion: 1, generation}` (VFS hello/heartbeat) |
+| `POST /local/v1/vfs/accounts` | mount capability | `{}` → the user's accounts (`id, provider, rootType, status`) |
+| `POST /local/v1/vfs/list` | mount capability | `{accountId, directory?}` → one complete directory listing (`id, name, kind, sizeBytes, modifiedMillis, directoryLocator`) |
+
+- **Capability:** `Authorization: Bearer hdv_<43 chars>`, 256-bit, stored as a SHA-256 hash in
+  memory, constant-time comparison, dies on revoke, a new mount, or agent restart. Never logged.
+- **Backend calls:** only `GET {origin}/api/v1/vfs/accounts` and
+  `GET {origin}/api/v1/vfs/accounts/{id}/files` with the grant; HTTP/1.1, no redirects, 5 s
+  connect, 20 s per request, 2 MiB per page, strict parsing. No URL or path ever comes from the
+  VFS.
+- **Listing limits:** 10,000 entries, 100 pages, 30 s, 4 concurrent listings; exceeding them
+  answers `413 directory_too_large`, `504 timeout` or `503 too_busy`. Repeated ids across pages
+  are dropped once. The agent keeps no snapshot after answering.
+- **Codes passed to the VFS:** `authorization_expired`/`authorization_lost` (401), `forbidden`,
+  `not_found`, `needs_reconnect` (409), `rate_limited`, `backend_unavailable`,
+  `invalid_backend_response`.
+- Capability `virtualDrive` is `true` (metadata support).
+
 ## Not implemented
 
 - Prefetching, full-file downloads and playback.
 - Writes and staging.
-- WinFsp and drive mounting.
+- Content reads through the virtual drive.
 - A Windows service, auto-start at login, an installer, and a bundled JRE.
 - Background sync and metrics.

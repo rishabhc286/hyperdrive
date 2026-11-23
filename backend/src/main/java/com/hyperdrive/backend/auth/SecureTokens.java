@@ -19,7 +19,9 @@ public enum SecureTokens {
     /** One-time ticket in the browser-start URL of a storage connection. */
     STORAGE_TICKET("hds_"),
     /** Cookie value binding a storage connection's Google callback to the browser that started it. */
-    BROWSER_BINDING("hdb_");
+    BROWSER_BINDING("hdb_"),
+    /** Short-lived, metadata-only grant handed to the local agent for the virtual drive (Batch 8). */
+    METADATA_GRANT("hdm_");
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Base64.Encoder ENCODER = Base64.getUrlEncoder().withoutPadding();
