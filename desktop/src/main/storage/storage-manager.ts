@@ -8,7 +8,8 @@ import type {
   StorageError,
   StorageFile,
   StorageProvider,
-  StorageResult
+  StorageResult,
+  RevokeResult
 } from '../../shared/storage';
 import { SessionExpiredError } from '../auth/auth-manager';
 import {
@@ -101,6 +102,19 @@ export class StorageManager {
     return result.ok ? { ok: true, value: null } : result;
   }
 
+  /**
+   * "Revoke provider access and disconnect" (Dropbox). The same local cleanup as disconnect runs
+   * whatever the provider answered; on revocation_unsupported nothing was changed, so none runs.
+   */
+  async revokeAndDisconnect(accountId: string): Promise<StorageResult<RevokeResult>> {
+    for (const controller of this.inFlight.get(accountId) ?? []) controller.abort();
+    this.inFlight.delete(accountId);
+    const result = await this.run((api, token) => api.revokeAndDisconnect(token, accountId));
+    if (!result.ok && result.error === 'revocation-unsupported') return result;
+    await this.deps.onAccountDisconnected?.(accountId).catch(() => undefined);
+    return result;
+  }
+
   /** Called on sign-out: forget attempts and stop in-flight requests. */
   reset(): void {
     this.knownTransactions.length = 0;
@@ -152,6 +166,7 @@ export function storageError(error: unknown): StorageError {
     if (error.code === 'continuation_expired') return 'continuation-expired';
     if (error.code === 'provider_not_configured') return 'not-configured';
     if (error.code === 'provider_permission_denied') return 'permission-denied';
+    if (error.code === 'revocation_unsupported') return 'revocation-unsupported';
     switch (error.status) {
       case 400:
         return 'invalid-request';

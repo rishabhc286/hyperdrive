@@ -110,6 +110,8 @@ export function storageErrorMessage(error: StorageError): string {
       return 'This folder changed or the listing expired. Refresh to load it again.';
     case 'cancelled':
       return 'The request was cancelled.';
+    case 'revocation-unsupported':
+      return 'HyperDrive can’t revoke access for this provider automatically. Disconnect, then remove access in the provider’s account settings.';
     case 'unknown':
       return 'Something went wrong. Try again.';
   }

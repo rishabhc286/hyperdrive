@@ -171,7 +171,7 @@ profile. Nothing simulates a login.
    ```
 5. Click **Continue with Google**, finish in the browser, then choose a username.
 6. Optional: **Cloud Accounts → Connect Dropbox**. First create a Dropbox app (Full Dropbox,
-   scopes `account_info.read` + `files.metadata.read`, redirect URI
+   scopes `account_info.read` + `files.metadata.read` + `files.content.read`, redirect URI
    `http://127.0.0.1:18080/api/v1/storage-connections/dropbox/callback`), then set
    `$env:DROPBOX_APP_KEY` and `$env:DROPBOX_APP_SECRET` in the backend window before step 3.
    See [docs/dropbox.md](docs/dropbox.md#dropbox-app-setup).
@@ -181,6 +181,10 @@ profile. Nothing simulates a login.
    Then browse it under **Files**.
 
 To run the built app instead of the dev server: `npm run build`, then `npm start`.
+
+**Live verification:** the full configuration runbook (Google Cloud project, Dropbox app, callback
+URLs, scopes, test users, environment variables with PostgreSQL on port 55432), test files and the
+record of what has been verified live is [docs/live-verification.md](docs/live-verification.md).
 
 ### Which process reads which setting
 

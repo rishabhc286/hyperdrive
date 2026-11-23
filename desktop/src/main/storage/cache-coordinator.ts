@@ -25,6 +25,9 @@ export interface CacheKeys {
 export interface CacheBudgetSettings {
   budgetBytes(): Promise<number>;
   setBudgetBytes(bytes: number): Promise<void>;
+  /** Persisted account purges still owed (survive an app restart). Optional for simple doubles. */
+  pendingAccountPurges?(): Promise<string[]>;
+  setPendingAccountPurges?(ids: readonly string[]): Promise<void>;
 }
 
 export interface CacheCoordinatorDeps {
@@ -74,6 +77,7 @@ export class CacheCoordinator {
   private starting: Promise<boolean> | null = null;
   private readonly pendingAccountPurges = new Set<string>();
   private lastUserId: string | null = null;
+  private pendingLoaded = false;
 
   constructor(private readonly deps: CacheCoordinatorDeps) {}
 
@@ -115,9 +119,12 @@ export class CacheCoordinator {
     }
     if (response.status !== 200) return false;
     this.session = { userId, instanceId: response.instanceId };
+    await this.loadPending();
+    const before = this.pendingAccountPurges.size;
     for (const accountId of [...this.pendingAccountPurges]) {
       if (await this.clearAccount(accountId)) this.pendingAccountPurges.delete(accountId);
     }
+    if (this.pendingAccountPurges.size !== before) await this.persistPending();
     return true;
   }
 
@@ -169,7 +176,20 @@ export class CacheCoordinator {
   async forgetAccount(accountId: string): Promise<void> {
     if (!this.deps.keys.available) return; // no key → nothing was ever cached
     if ((await this.ensureSession()) && (await this.clearAccount(accountId))) return;
+    await this.loadPending();
     this.pendingAccountPurges.add(accountId);
+    await this.persistPending();
+  }
+
+  private async loadPending(): Promise<void> {
+    if (this.pendingLoaded) return;
+    this.pendingLoaded = true;
+    const stored = await this.deps.settings.pendingAccountPurges?.().catch(() => []);
+    for (const id of stored ?? []) this.pendingAccountPurges.add(id);
+  }
+
+  private async persistPending(): Promise<void> {
+    await this.deps.settings.setPendingAccountPurges?.([...this.pendingAccountPurges]).catch(() => undefined);
   }
 
   private async clearAccount(accountId: string): Promise<boolean> {
@@ -191,6 +211,8 @@ export class CacheCoordinator {
     const userId = this.session?.userId ?? this.lastUserId;
     this.session = null;
     this.pendingAccountPurges.clear();
+    this.pendingLoaded = true;
+    await this.persistPending(); // the user purge below covers every account of this user
     if (!userId) return { agentReached: false, removed: 0, failed: 0 };
     let report: CleanupReport = { agentReached: false, removed: 0, failed: 0 };
     try {

@@ -156,6 +156,11 @@ public final class StorageConnectionDriver {
         return DesktopLoginDriver.JSON.readTree(result.getResponse().getContentAsString());
     }
 
+    public MvcResult revokeAndDisconnect(String accessToken, UUID accountId) throws Exception {
+        return record(mvc.perform(post("/api/v1/accounts/" + accountId + "/revoke-and-disconnect")
+                .header("Authorization", "Bearer " + accessToken)).andReturn());
+    }
+
     public MvcResult disconnect(String accessToken, UUID accountId) throws Exception {
         return record(mvc.perform(delete("/api/v1/accounts/" + accountId).header("Authorization", "Bearer " + accessToken))
                 .andReturn());

@@ -191,6 +191,28 @@ describe('StorageManager: accounts and files', () => {
     expect(failing.onAccountDisconnected).toHaveBeenCalledWith(ACCOUNT);
   });
 
+  it('revoke-and-disconnect posts to its own endpoint, reports the outcome and cleans up locally', async () => {
+    const t = setup((url, init) => {
+      expect(init.method).toBe('POST');
+      expect(url.pathname).toBe(`/api/v1/accounts/${ACCOUNT}/revoke-and-disconnect`);
+      return json(200, { revocation: 'failed', reason: 'provider_rejected', disconnected: true });
+    });
+    expect(await t.manager.revokeAndDisconnect(ACCOUNT)).toEqual({
+      ok: true,
+      value: { revocation: 'failed', reason: 'provider_rejected', disconnected: true }
+    });
+    expect(t.onAccountDisconnected).toHaveBeenCalledWith(ACCOUNT);
+  });
+
+  it('revoke-and-disconnect rejects malformed outcomes and changes nothing locally when unsupported', async () => {
+    const bad = setup(() => json(200, { revocation: 'revoked', reason: 'x', disconnected: true }));
+    expect(await bad.manager.revokeAndDisconnect(ACCOUNT)).toEqual({ ok: false, error: 'unknown' });
+
+    const google = setup(() => json(409, { code: 'revocation_unsupported' }));
+    expect(await google.manager.revokeAndDisconnect(ACCOUNT)).toEqual({ ok: false, error: 'revocation-unsupported' });
+    expect(google.onAccountDisconnected).not.toHaveBeenCalled();
+  });
+
   it('parses the content-read grant strictly', async () => {
     const { manager } = setup(() =>
       json(200, { items: [account, { ...account, id: '7a1c2a8e-1b2c-4d3e-8f90-123456789abc', contentReadGranted: true }] })

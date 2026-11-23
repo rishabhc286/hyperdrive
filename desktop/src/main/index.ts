@@ -227,6 +227,9 @@ function registerIpc(
   handleTrusted(StorageIpcChannel.disconnectAccount, (args) => {
     return storage.disconnectAccount(parseAccountPayload(StorageIpcChannel.disconnectAccount, args).accountId);
   });
+  handleTrusted(StorageIpcChannel.revokeAndDisconnect, (args) => {
+    return storage.revokeAndDisconnect(parseAccountPayload(StorageIpcChannel.revokeAndDisconnect, args).accountId);
+  });
 
   auth.onChange((status) => {
     if (status.phase === 'signed-in') cache.noteUser(status.user?.id ?? null);

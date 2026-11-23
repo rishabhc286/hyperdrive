@@ -15,6 +15,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,10 +34,13 @@ public class ConnectedAccountController {
 
     private final ConnectedAccountService accounts;
     private final StorageFilesService files;
+    private final ProviderRevocationService revocation;
 
-    public ConnectedAccountController(ConnectedAccountService accounts, StorageFilesService files) {
+    public ConnectedAccountController(ConnectedAccountService accounts, StorageFilesService files,
+            ProviderRevocationService revocation) {
         this.accounts = accounts;
         this.files = files;
+        this.revocation = revocation;
     }
 
     @GetMapping
@@ -63,6 +67,30 @@ public class ConnectedAccountController {
             throw notFound();
         }
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+    }
+
+    /**
+     * "Revoke provider access and disconnect": a separate, explicitly confirmed action. Dropbox
+     * only; Google Drive answers 409 {@code revocation_unsupported} and nothing changes. Always
+     * disconnects locally after the attempt and reports {@code confirmed}, {@code failed} or
+     * {@code unknown}.
+     */
+    @PostMapping("/{accountId}/revoke-and-disconnect")
+    public ResponseEntity<RevocationResponse> revokeAndDisconnect(@AuthenticationPrincipal SessionPrincipal principal,
+            @PathVariable UUID accountId) {
+        ProviderRevocationService.Result result;
+        try {
+            result = revocation.revokeAndDisconnect(principal.userId(), accountId).orElseThrow(ConnectedAccountController::notFound);
+        } catch (ProviderRevocationService.UnsupportedProviderException e) {
+            throw new ApiException(HttpStatus.CONFLICT, "revocation_unsupported",
+                    "Automatic revocation isn't offered for this provider; disconnect and remove access in the provider's account settings.");
+        }
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(new RevocationResponse(result.outcome().name().toLowerCase(java.util.Locale.ROOT), result.reason(),
+                        result.disconnected()));
+    }
+
+    public record RevocationResponse(String revocation, String reason, boolean disconnected) {
     }
 
     /**

@@ -294,3 +294,54 @@ describe('ReadCoordinator', () => {
     expect(t.agent.restart).not.toHaveBeenCalled();
   });
 });
+
+describe('ReadCoordinator: disconnect/logout races (verification checkpoint)', () => {
+  it('a delegation still waiting for the backend when the account is disconnected is never installed', async () => {
+    const t = setup();
+    let release: (c: ReadCredential) => void = () => undefined;
+    t.issueCredential.mockImplementationOnce(() => new Promise<ReadCredential>((r) => (release = r)));
+    const pending = t.coordinator.verifyRead(request);
+    await vi.waitFor(() => expect(t.issueCredential).toHaveBeenCalledTimes(1));
+
+    await t.coordinator.forgetAccount(ACCOUNT);
+    release(credential());
+
+    expect(await pending).toEqual({ ok: false, error: 'cancelled' });
+    expect(t.paths()).not.toContain('/local/v1/credentials');
+    expect(t.paths()).not.toContain('/local/v1/reads');
+  });
+
+  it('a credential the agent installs after a disconnect is cleared again and not used', async () => {
+    const t = setup();
+    const original = t.agent.post;
+    t.agent.post = vi.fn(async (path: AgentPostPath, body: unknown, timeoutMs?: number) => {
+      const reply = await original(path, body, timeoutMs);
+      if (path === '/local/v1/credentials') await t.coordinator.forgetAccount(ACCOUNT);
+      return reply;
+    });
+
+    expect(await t.coordinator.verifyRead(request)).toEqual({ ok: false, error: 'cancelled' });
+    const paths = t.paths();
+    expect(paths).not.toContain('/local/v1/reads');
+    expect(paths.lastIndexOf('/local/v1/credentials/clear')).toBeGreaterThan(paths.indexOf('/local/v1/credentials'));
+    expect(t.calls.at(-1)!.body).toEqual({ accountId: ACCOUNT });
+  });
+
+  it('a read that completes after sign-out is discarded and its bytes zeroed', async () => {
+    const bytes = new Uint8Array(100).fill(9);
+    const t = setup({ readReplies: [binary(bytes)] });
+    const original = t.agent.post;
+    t.agent.post = vi.fn(async (path: AgentPostPath, body: unknown, timeoutMs?: number) => {
+      const reply = await original(path, body, timeoutMs);
+      if (path === '/local/v1/reads') await t.coordinator.reset({ endCache: true });
+      return reply;
+    });
+
+    expect(await t.coordinator.verifyRead(request)).toEqual({ ok: false, error: 'cancelled' });
+    expect(bytes.every((b) => b === 0)).toBe(true);
+    // A later read (signed in again) delegates afresh instead of reusing the old handle.
+    t.agent.post = original;
+    expect(await t.coordinator.verifyRead(request)).toMatchObject({ ok: true });
+    expect(t.issueCredential).toHaveBeenCalledTimes(2);
+  });
+});

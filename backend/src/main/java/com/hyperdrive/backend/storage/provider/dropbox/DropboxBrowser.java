@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -220,6 +221,40 @@ public class DropboxBrowser implements FileBrowser, ProviderHttp.Classifier {
                     res.getHeaders().getFirst(HttpHeaders.RETRY_AFTER), res.getBody().readAllBytes()), true);
         }, this);
         return parse(response.body());
+    }
+
+    /** Result of one {@code auth/token/revoke} attempt. */
+    public enum RevokeOutcome {
+        /** Dropbox answered 2xx: the token, and per its docs the refresh token it came from, is disabled. */
+        CONFIRMED,
+        /** Dropbox answered with a definite error (e.g. 400/401/403/409): nothing was confirmed revoked. */
+        FAILED,
+        /** No answer, a timeout, 429 or 5xx: the request may or may not have been processed. */
+        UNKNOWN
+    }
+
+    /**
+     * {@code POST /2/auth/token/revoke} with the given token and no body. Dropbox documents: "Disables
+     * the access token used to authenticate the call. If there is a corresponding refresh token for the
+     * access token, this disables that refresh token, as well as any other access tokens for that
+     * refresh token." One attempt, no retries; the response body is discarded, never logged.
+     */
+    public RevokeOutcome revokeToken(ProviderAccessToken token) {
+        URI uri = UriComponentsBuilder.fromUri(apiBaseUrl).path("/auth/token/revoke").build().toUri();
+        try {
+            int status = http.post().uri(uri)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + token.value())
+                    .exchange((req, res) -> {
+                        res.getBody().readAllBytes();
+                        return res.getStatusCode().value();
+                    }, true);
+            if (status >= 200 && status < 300) {
+                return RevokeOutcome.CONFIRMED;
+            }
+            return status == 429 || status >= 500 ? RevokeOutcome.UNKNOWN : RevokeOutcome.FAILED;
+        } catch (RestClientException e) {
+            return RevokeOutcome.UNKNOWN;
+        }
     }
 
     static String pathRootHeader(String rootNamespaceId) {

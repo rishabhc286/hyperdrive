@@ -1,5 +1,87 @@
 # Progress
 
+## Verification checkpoint before Batch 8 (2026-11-23)
+
+Not a feature batch: decisions on Disconnect and revocation, targeted fixes found by auditing, and
+live verification where it was possible. Live OAuth checks are **blocked**: no Google OAuth client
+or Dropbox app credentials are configured on this machine (checked by variable presence only).
+
+### Disconnect decision (implemented)
+
+- **"Disconnect"** stays local unlinking: delete the connection and its encrypted credentials,
+  cancel its reads, clear its delegated credential in the agent, purge its cached chunks. The
+  HyperDrive account, other connections and remote files are untouched. It never calls a provider
+  revocation endpoint and the UI no longer implies it does.
+- **"Revoke access and disconnect"** is a separate, confirmed action, **Dropbox only**
+  (`POST /api/v1/accounts/{id}/revoke-and-disconnect`): one `auth/token/revoke` call, then an
+  unconditional local disconnect; outcome `confirmed` / `failed` / `unknown`; manual instructions
+  when not confirmed. Credentials are never kept to retry.
+- **Google revocation deferred:** Google documents that revocation removes everything the account
+  granted to the Cloud **project** (all its clients). HyperDrive's sign-in and Drive share one
+  client by default, and several HyperDrive users can connect the same Google account, so a
+  per-connection revoke isn't possible. Manual instructions (myaccount.google.com/permissions) and
+  the effects are shown instead. **Needs owner approval** to implement one of:
+  1. Revoke only when no other connection on this server uses the same Google account, with the
+     sign-in-consent effect stated in the confirmation.
+  2. Use a separate Google Cloud project for Drive, then option 1 (sign-in unaffected).
+  3. Keep manual-only (current state).
+- **Compliance flag:** Google's OAuth policies ask apps to revoke tokens they no longer need;
+  Disconnect deletes but doesn't revoke Google tokens. Resolve before a public, verified Google
+  release. Dropbox terms read contain no revoke-on-unlink requirement.
+
+### Fixes from the audit (with regression tests)
+
+- **Disconnect/logout race (desktop):** a credential delegation or read still in flight when the
+  account was disconnected (or the user signed out) could finish afterwards and re-install a
+  delegated credential in the agent. `ReadCoordinator` now has per-account and global epochs:
+  late results are discarded (`cancelled`), late-installed credentials are cleared again, late
+  read bytes are zeroed. Three tests; all three fail on the previous code.
+- **Owed account purges survived only in memory:** a disconnect while the agent was down left
+  that account's encrypted chunks on disk after an app restart. Pending purges are now persisted in
+  `cache-settings.json` and retried at the next session (test).
+- **Outdated setup docs:** the Dropbox app setup (and README) still listed two scopes;
+  `files.content.read` is required since Batch 6. security.md still said "no content scopes".
+- **Wording:** cache/security/ADR docs now distinguish deleting encrypted files (Clear cache,
+  Disconnect: key kept) from deleting the key (logout only), and make no cryptographic- or
+  physical-erasure claim where the key still exists.
+- **Live-QA evidence:** the agent logs one sanitized line per chunk fetch (provider, 4-char rev
+  prefix, chunk index, range, validated bytes, whether the response revision was absent/matching,
+  admission or reason). Test proves no token, handle, file id or full rev appears.
+
+### Verification status
+
+| Item | Status |
+| --- | --- |
+| Google sign-in, onboarding, returning login | **Not executed**: no Google OAuth client configured |
+| Google Drive connection, browsing, reads, Google cache bypass | **Not executed**: same blocker (mock-tested) |
+| Dropbox connection, browsing, reads, revision-pinned cache path | **Not executed**: no Dropbox app (mock-tested) |
+| Dropbox revoke-and-disconnect | **Passed with mocks only** (backend fake + desktop tests) |
+| Permission/reconnect errors, logout/disconnect cleanup | **Passed with mocks only** |
+| Real Windows `safeStorage` key creation, restart recovery, corrupt/missing/foreign key handling, no plaintext | **Passed live** (Electron 45.4.1, this machine) |
+| Encrypted cache hit with the real key | **Not executed**: needs an eligible live Dropbox read |
+| Cache disabled when OS protection unavailable | **Passed with mocks only** (DPAPI can't be disabled here) |
+
+Runbook and details: [live-verification.md](live-verification.md).
+
+**Automated checks:** agent 83 tests passed; desktop typecheck, lint, build and 255 tests passed
+(including the real-jar smoke test); backend `mvnw verify` 223 tests passed (218 + 5 new
+revoke/disconnect tests, Testcontainers PostgreSQL).
+
+### Cached-access policy (as enforced today)
+
+- A read (hit or miss) needs a signed-in session, a connected owned account, and a delegated
+  credential issued by the backend; handles live at most 20 minutes and are re-issued only through
+  the backend. Each diagnostic read first fetches fresh metadata through the backend (a live
+  provider call for that file).
+- Logout and disconnect clear the credential (cancelling reads and shared fetches), purge chunks,
+  and now discard late in-flight delegations and reads. Generation counters block late
+  publication.
+- Not offline access. A hit doesn't prove current permission at the provider.
+- **Proposed for Batch 8 (not implemented):** when WinFsp reads bypass the per-read metadata
+  check, serve cached chunks only while the account's delegated credential is valid (≤ 20 min),
+  and revalidate file metadata through the backend at file open and at least on that interval.
+  This bounds, but doesn't eliminate, the window after a remote permission change.
+
 ## Batch 7: encrypted local 4 MiB chunk cache (2026-11-22)
 
 ### Foundation check before starting

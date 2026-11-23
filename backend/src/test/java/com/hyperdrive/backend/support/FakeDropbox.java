@@ -59,6 +59,9 @@ public final class FakeDropbox {
     private final Map<String, Account> codes = new ConcurrentHashMap<>();
     private final Map<String, Account> accessTokens = new ConcurrentHashMap<>();
     private final Map<String, Account> refreshTokens = new ConcurrentHashMap<>();
+    /** access token -> the refresh token it belongs to (revoke disables exactly that grant). */
+    private final Map<String, String> accessToRefresh = new ConcurrentHashMap<>();
+    public final AtomicInteger revokeCalls = new AtomicInteger();
     /** namespace id -> (path_lower -> entries). */
     private final Map<String, Map<String, List<Map<String, Object>>>> namespaces = new ConcurrentHashMap<>();
     public final List<Map<String, String>> tokenRequests = new CopyOnWriteArrayList<>();
@@ -97,6 +100,7 @@ public final class FakeDropbox {
         apiFailures.clear();
         refreshFailures.clear();
         refreshGrants.set(0);
+        revokeCalls.set(0);
         overrideCurrentAccountId = null;
         accessTokenSeconds = 14400;
     }
@@ -188,7 +192,7 @@ public final class FakeDropbox {
                 return;
             }
             // Documented: the refresh grant does not return a new refresh token.
-            respond(ex, 200, Map.of("access_token", newAccess(account), "token_type", "bearer",
+            respond(ex, 200, Map.of("access_token", newAccess(account, form.get("refresh_token")), "token_type", "bearer",
                     "expires_in", accessTokenSeconds));
             return;
         }
@@ -197,15 +201,15 @@ public final class FakeDropbox {
             respond(ex, 400, Map.of("error", "invalid_grant"));
             return;
         }
+        String refresh = account.issueRefresh() ? "fake-dropbox-refresh-" + UUID.randomUUID() : null;
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("access_token", newAccess(account));
+        body.put("access_token", newAccess(account, refresh));
         body.put("expires_in", accessTokenSeconds);
         body.put("token_type", "bearer");
         body.put("scope", account.grantedScope());
         body.put("account_id", account.accountId());
         body.put("uid", "12345");
-        if (account.issueRefresh()) {
-            String refresh = "fake-dropbox-refresh-" + UUID.randomUUID();
+        if (refresh != null) {
             refreshTokens.put(refresh, account);
             issuedTokens.add(refresh);
             body.put("refresh_token", refresh);
@@ -213,9 +217,12 @@ public final class FakeDropbox {
         respond(ex, 200, body);
     }
 
-    private String newAccess(Account account) {
+    private String newAccess(Account account, String refresh) {
         String token = "sl.fake-dropbox-access-" + UUID.randomUUID();
         accessTokens.put(token, account);
+        if (refresh != null) {
+            accessToRefresh.put(token, refresh);
+        }
         issuedTokens.add(token);
         return token;
     }
@@ -238,6 +245,26 @@ public final class FakeDropbox {
         Account account = auth == null ? null : accessTokens.get(auth.replaceFirst("^Bearer ", ""));
         if (account == null) {
             respond(ex, 401, Map.of("error_summary", "invalid_access_token/", "error", Map.of(".tag", "invalid_access_token")));
+            return;
+        }
+        if ("auth/token/revoke".equals(endpoint)) {
+            // Documented: disables this access token, its refresh token and that refresh token's other
+            // access tokens. Other grants of the same user and app are untouched.
+            revokeCalls.incrementAndGet();
+            String access = auth.replaceFirst("^Bearer ", "");
+            accessTokens.remove(access);
+            String refresh = accessToRefresh.remove(access);
+            if (refresh != null) {
+                refreshTokens.remove(refresh);
+                accessToRefresh.entrySet().removeIf(e -> {
+                    boolean sibling = e.getValue().equals(refresh);
+                    if (sibling) {
+                        accessTokens.remove(e.getKey());
+                    }
+                    return sibling;
+                });
+            }
+            respondRaw(ex, new Injected(200, Map.of(), "null"));
             return;
         }
         switch (endpoint) {

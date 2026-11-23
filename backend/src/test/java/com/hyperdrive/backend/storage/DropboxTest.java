@@ -507,6 +507,103 @@ class DropboxTest extends StorageIntegrationTest {
                 "\"provider\":\"DROPBOX\",\"available\":true");
     }
 
+    // --- Disconnect vs. revoke-and-disconnect (verification checkpoint) -------------------------
+
+    @Test
+    void ordinaryDisconnectIsLocalOnlyAndNeverCallsTheRevokeEndpoint() throws Exception {
+        String token = onboardedUser("login-dbx-30", "una");
+        UUID id = storage.connectDropbox(token, dropbox, PERSONAL);
+        String refresh = storedRefreshToken(id);
+
+        assertThat(storage.disconnect(token, id).getResponse().getStatus()).isEqualTo(204);
+
+        assertThat(dropbox.revokeCalls.get()).isZero();
+        assertThat(dropbox.apiRequests.stream().map(FakeDropbox.Request::endpoint)).doesNotContain("auth/token/revoke");
+        assertThat(count("connected_accounts")).isZero();
+        assertThat(count("provider_credentials")).isZero();
+        // The provider grant itself is untouched by a local unlink.
+        assertThat(dropbox.issuedTokens).contains(refresh);
+        assertThat(storage.api(token, "/api/v1/me").getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void revokeAndDisconnectRevokesOnlyThisConnectionsGrantThenUnlinks() throws Exception {
+        String alice = onboardedUser("login-dbx-31", "vera");
+        UUID aliceId = storage.connectDropbox(alice, dropbox, PERSONAL);
+        String bob = onboardedUser("login-dbx-32", "walt");
+        UUID bobId = storage.connectDropbox(bob, dropbox, PERSONAL); // same Dropbox account, own grant
+        dropbox.apiRequests.clear();
+
+        MvcResult result = storage.revokeAndDisconnect(alice, aliceId);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(result.getResponse().getHeader("Cache-Control")).contains("no-store");
+        JsonNode body = json(result);
+        assertThat(body.get("revocation").asString()).isEqualTo("confirmed");
+        assertThat(body.get("disconnected").asBoolean()).isTrue();
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("sl.fake", "fake-dropbox-refresh");
+        assertThat(dropbox.revokeCalls.get()).isEqualTo(1);
+        assertThat(storage.api(alice, "/api/v1/accounts/" + aliceId).getResponse().getStatus()).isEqualTo(404);
+        assertThat(jdbc.sql("SELECT count(*) FROM provider_credentials WHERE connected_account_id = :id")
+                .param("id", aliceId).query(Long.class).single()).isZero();
+        // The other HyperDrive user's connection to the same Dropbox account keeps working.
+        assertThat(storage.api(bob, files(bobId, "")).getResponse().getStatus()).isEqualTo(200);
+        expire(bobId);
+        assertThat(storage.api(bob, files(bobId, "")).getResponse().getStatus()).isEqualTo(200);
+        assertThat(storage.api(alice, "/api/v1/me").getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void failedOrUnansweredRevocationIsReportedAndStillDisconnects() throws Exception {
+        String token = onboardedUser("login-dbx-33", "xena");
+        UUID first = storage.connectDropbox(token, dropbox, PERSONAL);
+        dropbox.apiFailures.add(new Injected(503, Map.of(), "{}"));
+        JsonNode unknown = json(storage.revokeAndDisconnect(token, first));
+        assertThat(unknown.get("revocation").asString()).isEqualTo("unknown");
+        assertThat(unknown.get("disconnected").asBoolean()).isTrue();
+        assertThat(count("provider_credentials")).isZero();
+
+        UUID second = storage.connectDropbox(token, dropbox, PERSONAL);
+        dropbox.apiFailures.add(new Injected(400, Map.of(), "{\"error_summary\":\"bad/\"}"));
+        JsonNode failed = json(storage.revokeAndDisconnect(token, second));
+        assertThat(failed.get("revocation").asString()).isEqualTo("failed");
+        assertThat(failed.get("reason").asString()).isEqualTo("provider_rejected");
+        assertThat(count("connected_accounts")).isZero();
+    }
+
+    @Test
+    void anUnusableCredentialIsReportedAsFailedWithoutAProviderCall() throws Exception {
+        String token = onboardedUser("login-dbx-34", "yuri");
+        UUID id = storage.connectDropbox(token, dropbox, PERSONAL);
+        dropbox.revoke(PERSONAL.accountId());
+        expire(id);
+
+        JsonNode body = json(storage.revokeAndDisconnect(token, id));
+
+        assertThat(body.get("revocation").asString()).isEqualTo("failed");
+        assertThat(body.get("reason").asString()).isEqualTo("no_usable_credential");
+        assertThat(body.get("disconnected").asBoolean()).isTrue();
+        assertThat(dropbox.revokeCalls.get()).isZero();
+        assertThat(count("connected_accounts")).isZero();
+    }
+
+    @Test
+    void revocationIsRefusedForGoogleDriveAndForeignAccounts() throws Exception {
+        String token = onboardedUser("login-dbx-35", "zara");
+        UUID drive = storage.connect(token, StorageConnectionDriver.driveLogin("drive-sub-35", "drive35@example.com"));
+        MvcResult google = storage.revokeAndDisconnect(token, drive);
+        assertThat(google.getResponse().getStatus()).isEqualTo(409);
+        assertThat(json(google).get("code").asString()).isEqualTo("revocation_unsupported");
+        assertThat(accountStatus(drive)).isEqualTo("CONNECTED");
+
+        UUID box = storage.connectDropbox(token, dropbox, PERSONAL);
+        String mallory = onboardedUser("login-dbx-36", "mallory36");
+        MvcResult foreign = storage.revokeAndDisconnect(mallory, box);
+        assertThat(foreign.getResponse().getStatus()).isEqualTo(404);
+        assertThat(dropbox.revokeCalls.get()).isZero();
+        assertThat(accountStatus(box)).isEqualTo("CONNECTED");
+    }
+
     private void expire(UUID accountId) {
         jdbc.sql("UPDATE provider_credentials SET access_token_expires_at = :t WHERE connected_account_id = :id")
                 .param("t", OffsetDateTime.ofInstant(clock.instant().minusSeconds(60), ZoneOffset.UTC))

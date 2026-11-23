@@ -47,6 +47,8 @@ const storage: StorageApi = {
     }),
   disconnectAccount: (input) =>
     ipcRenderer.invoke(StorageIpcChannel.disconnectAccount, { accountId: String(input.accountId) }),
+  revokeAndDisconnect: (input) =>
+    ipcRenderer.invoke(StorageIpcChannel.revokeAndDisconnect, { accountId: String(input.accountId) }),
   // Returns only digest/timing facts; the bytes never cross the bridge.
   verifyFileRead: (input) =>
     ipcRenderer.invoke(StorageIpcChannel.verifyFileRead, {

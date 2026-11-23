@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import type { ConnectedAccount, StorageApi, StorageError, StorageProvider } from '../../shared/storage';
+import type { ConnectedAccount, RevokeResult, StorageApi, StorageError, StorageProvider } from '../../shared/storage';
 import { ProviderIcon } from './ProviderIcon';
 import {
   accountLabel,
@@ -177,16 +177,35 @@ function Dismissable({
   );
 }
 
-function revokeHint(provider: StorageProvider): string {
+/** Manual, provider-side removal (official account pages). Shown with Disconnect and after a failed revoke. */
+export function manualRevokeHint(provider: StorageProvider): string {
   return provider === 'DROPBOX'
-    ? 'To also remove HyperDrive’s access in Dropbox, use Dropbox Settings → Connected apps.'
-    : 'To also remove HyperDrive from your Google Account, use Google Account → Security → Your connections to third-party apps.';
+    ? 'To remove HyperDrive’s authorization in Dropbox yourself, open dropbox.com/account/connected_apps (Settings → Apps), choose HyperDrive and click Disconnect.'
+    : 'To remove HyperDrive’s authorization in Google, open myaccount.google.com/permissions (Third-party apps with account access) and remove HyperDrive. Google removes everything this Google account granted to this HyperDrive server’s Google project: every Drive connection of this Google account on this server stops working, and signing in to HyperDrive with it may ask for consent again.';
 }
 
+/** What the user is told after "Revoke access and disconnect". Never claims more than the backend reported. */
+export function revokeOutcomeMessage(label: string, result: RevokeResult): string {
+  const local = result.disconnected
+    ? `${label} was disconnected from HyperDrive and its stored access was deleted.`
+    : `${label} was already gone from HyperDrive.`;
+  switch (result.revocation) {
+    case 'confirmed':
+      return `Dropbox confirmed that this connection’s authorization was revoked. ${local}`;
+    case 'failed':
+      return `Dropbox did not confirm the revocation. ${local} ${manualRevokeHint('DROPBOX')}`;
+    case 'unknown':
+      return `Dropbox didn’t answer clearly, so it’s unknown whether the authorization was revoked. ${local} ${manualRevokeHint('DROPBOX')}`;
+  }
+}
+
+type Confirming = { readonly id: string; readonly mode: 'disconnect' | 'revoke' };
+
 function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: CloudAccountsProps & { busy: boolean }) {
-  const [confirming, setConfirming] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<StorageError | null>(null);
+  const [outcome, setOutcome] = useState<{ text: string; warn: boolean } | null>(null);
 
   if (accounts.status === 'loading' && accounts.accounts.length === 0) {
     return <p className="muted">Loading connected accounts…</p>;
@@ -201,17 +220,26 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
       </div>
     );
   }
+  const outcomeNotice = outcome && (
+    <div className={outcome.warn ? 'notice notice-warn' : 'notice'} role="status">
+      {outcome.text}
+    </div>
+  );
   if (accounts.accounts.length === 0) {
     return (
-      <div className="empty">
-        <p className="empty-title">No cloud accounts connected.</p>
-      </div>
+      <>
+        {outcomeNotice}
+        <div className="empty">
+          <p className="empty-title">No cloud accounts connected.</p>
+        </div>
+      </>
     );
   }
 
   const disconnect = async (account: ConnectedAccount) => {
     setRemoving(account.id);
     setError(null);
+    setOutcome(null);
     const result = await storage
       .disconnectAccount({ accountId: account.id })
       .catch(() => ({ ok: false as const, error: 'unknown' as const }));
@@ -221,8 +249,29 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
     onReloadAccounts();
   };
 
+  const revoke = async (account: ConnectedAccount) => {
+    setRemoving(account.id);
+    setError(null);
+    setOutcome(null);
+    const result = await storage
+      .revokeAndDisconnect({ accountId: account.id })
+      .catch(() => ({ ok: false as const, error: 'unknown' as const }));
+    setRemoving(null);
+    setConfirming(null);
+    if (result.ok) {
+      setOutcome({
+        text: revokeOutcomeMessage(accountLabel(account), result.value),
+        warn: result.value.revocation !== 'confirmed'
+      });
+    } else if (result.error !== 'not-found') {
+      setError(result.error);
+    }
+    onReloadAccounts();
+  };
+
   return (
     <>
+      {outcomeNotice}
       {error && (
         <div className="notice notice-warn" role="alert">
           The account couldn’t be disconnected. {storageErrorMessage(error)}
@@ -254,12 +303,42 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
                   </span>
                 )}
               </div>
-              {confirming === account.id ? (
+              {confirming?.id === account.id && confirming.mode === 'revoke' ? (
+                <div className="confirm" role="group" aria-label={`Confirm revoking ${name} access for ${label}`}>
+                  <p className="small">
+                    Revoke HyperDrive’s {name} access and disconnect {label}? HyperDrive asks {name} to disable the
+                    authorization this connection uses (its refresh token and the access tokens issued from it), then
+                    disconnects it here even if {name} doesn’t confirm. Other HyperDrive connections to the same {name}{' '}
+                    account (other HyperDrive users or servers) hold their own authorizations and aren’t revoked. Nothing
+                    in your {name} is deleted. To use this account in HyperDrive again, connect it and approve access
+                    again.
+                  </p>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="button button-small button-danger"
+                      onClick={() => void revoke(account)}
+                      disabled={removing === account.id}
+                    >
+                      {removing === account.id ? 'Revoking…' : 'Revoke access and disconnect'}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-secondary button-small"
+                      onClick={() => setConfirming(null)}
+                      disabled={removing === account.id}
+                    >
+                      Keep connected
+                    </button>
+                  </div>
+                </div>
+              ) : confirming?.id === account.id ? (
                 <div className="confirm" role="group" aria-label={`Confirm disconnecting ${name} ${label}`}>
                   <p className="small">
-                    Disconnect {name} {label}? HyperDrive deletes its stored access for this account only. Your files
-                    stay in {name}, your other accounts stay connected, and you stay signed in to HyperDrive.{' '}
-                    {revokeHint(account.provider)}
+                    Disconnect {name} {label} from HyperDrive? HyperDrive deletes its stored access and cached file data
+                    for this account only. This does not revoke HyperDrive’s authorization at {name} and does not delete
+                    anything in {name}. Your other accounts stay connected, and you stay signed in to HyperDrive.{' '}
+                    {manualRevokeHint(account.provider)}
                   </p>
                   <div className="actions">
                     <button
@@ -296,11 +375,21 @@ function AccountList({ storage, accounts, onReloadAccounts, onConnect, busy }: C
                   <button
                     type="button"
                     className="button button-secondary button-small"
-                    onClick={() => setConfirming(account.id)}
+                    onClick={() => setConfirming({ id: account.id, mode: 'disconnect' })}
                     aria-label={`Disconnect ${name} ${label}`}
                   >
                     Disconnect…
                   </button>
+                  {account.provider === 'DROPBOX' && (
+                    <button
+                      type="button"
+                      className="button button-secondary button-small"
+                      onClick={() => setConfirming({ id: account.id, mode: 'revoke' })}
+                      aria-label={`Revoke ${name} access and disconnect ${label}`}
+                    >
+                      Revoke access…
+                    </button>
+                  )}
                 </div>
               )}
             </li>

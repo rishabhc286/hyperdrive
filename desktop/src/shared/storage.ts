@@ -89,7 +89,19 @@ export type StorageError =
   | 'not-configured'
   | 'continuation-expired'
   | 'cancelled'
+  | 'revocation-unsupported'
   | 'unknown';
+
+/** Outcome of the provider-side revocation attempt in "Revoke provider access and disconnect". */
+export type RevocationOutcome = 'confirmed' | 'failed' | 'unknown';
+
+export interface RevokeResult {
+  readonly revocation: RevocationOutcome;
+  /** Fixed machine code from the backend (never provider text). */
+  readonly reason: string;
+  /** The local link and stored credentials were removed. */
+  readonly disconnected: boolean;
+}
 
 export type StorageResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -171,6 +183,11 @@ export interface StorageApi {
   getFileMetadata(input: { accountId: string; fileId: string }): Promise<StorageResult<StorageFile>>;
   /** Removes HyperDrive's link and stored credentials. Does not delete files or sign out. */
   disconnectAccount(input: { accountId: string }): Promise<StorageResult<null>>;
+  /**
+   * Separate, explicitly confirmed action (Dropbox only): ask the provider to revoke this
+   * connection's grant, then disconnect locally whatever the provider answered.
+   */
+  revokeAndDisconnect(input: { accountId: string }): Promise<StorageResult<RevokeResult>>;
   /** Development diagnostic: one bounded real read of a listed file through the local agent. */
   verifyFileRead(input: VerifyReadRequest): Promise<ReadDiagnostic>;
 }
@@ -184,6 +201,7 @@ export const StorageIpcChannel = {
   listFiles: 'hyperdrive:storage:list-files',
   getFileMetadata: 'hyperdrive:storage:get-file-metadata',
   disconnectAccount: 'hyperdrive:storage:disconnect-account',
+  revokeAndDisconnect: 'hyperdrive:storage:revoke-and-disconnect',
   verifyFileRead: 'hyperdrive:storage:verify-file-read'
 } as const;
 

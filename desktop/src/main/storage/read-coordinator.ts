@@ -50,6 +50,13 @@ const DECODER = new TextDecoder();
 export class ReadCoordinator {
   private readonly handles = new Map<string, Handle>();
   private readonly renewals = new Map<string, Promise<Handle>>();
+  /**
+   * Bumped by forgetAccount (per account) and reset (all accounts). A delegation or read that
+   * started before a disconnect/logout and finishes after it is discarded, and a credential it
+   * installed in the agent is cleared again, so in-flight work can't restore access.
+   */
+  private readonly accountEpochs = new Map<string, number>();
+  private globalEpoch = 0;
   private readonly now: () => number;
 
   constructor(private readonly deps: ReadCoordinatorDeps) {
@@ -87,6 +94,7 @@ export class ReadCoordinator {
       expectedRevision: file.providerRevision
     };
 
+    const epoch = this.epochOf(accountId);
     // Best effort: without a cache session the agent simply serves the read uncached (and says so).
     await this.deps.cache?.ensureSession().catch(() => false);
 
@@ -105,6 +113,10 @@ export class ReadCoordinator {
         return fail('agent-unavailable');
       }
       const elapsedMs = Math.max(0, this.now() - started);
+      if (this.epochOf(accountId) !== epoch) {
+        response.body.fill(0);
+        return fail('cancelled'); // disconnected or signed out meanwhile
+      }
       if (response.status === 200 && (response.headers['content-type'] ?? '').startsWith('application/octet-stream')) {
         return this.digest(response, handle.provider, file, offset, length, elapsedMs);
       }
@@ -120,7 +132,9 @@ export class ReadCoordinator {
 
   /** Forget one account (disconnect): drop the handle here and its credential in the agent. */
   async forgetAccount(accountId: string): Promise<void> {
+    this.accountEpochs.set(accountId, (this.accountEpochs.get(accountId) ?? 0) + 1);
     this.handles.delete(accountId);
+    this.renewals.delete(accountId);
     await this.clearInAgent({ accountId }); // cancels that account's reads (and shared chunk fetches)
     await this.deps.cache?.forgetAccount(accountId).catch(() => undefined);
   }
@@ -131,9 +145,15 @@ export class ReadCoordinator {
    * not a transient "checking"/"unavailable" phase) the user's cached chunks and key are purged too.
    */
   async reset(options: { endCache?: boolean } = {}): Promise<void> {
+    this.globalEpoch += 1;
     this.handles.clear();
+    this.renewals.clear();
     await this.clearInAgent({});
     if (options.endCache) await this.deps.cache?.endSession().catch(() => undefined);
+  }
+
+  private epochOf(accountId: string): string {
+    return `${this.globalEpoch}:${this.accountEpochs.get(accountId) ?? 0}`;
   }
 
   private async clearInAgent(body: { accountId?: string }): Promise<void> {
@@ -162,14 +182,18 @@ export class ReadCoordinator {
     }
     const pending = this.renewals.get(accountId);
     if (pending) return pending;
-    const renewal = this.delegate(accountId).finally(() => this.renewals.delete(accountId));
+    const renewal = this.delegate(accountId).finally(() => {
+      if (this.renewals.get(accountId) === renewal) this.renewals.delete(accountId);
+    });
     this.renewals.set(accountId, renewal);
     return renewal;
   }
 
   private async delegate(accountId: string): Promise<Handle> {
     if (this.deps.agent.instanceId() === null) throw new DelegationError('agent-unavailable');
+    const epoch = this.epochOf(accountId);
     const credential = await this.deps.issueCredential(accountId);
+    if (this.epochOf(accountId) !== epoch) throw new DelegationError('cancelled'); // never handed to the agent
     let response: AgentPostResponse & { instanceId: string };
     try {
       response = await this.deps.agent.post(
@@ -192,6 +216,11 @@ export class ReadCoordinator {
     const retention = Date.parse(String(parsed['retentionExpiresAt']));
     if (typeof handle !== 'string' || !/^hdh_[A-Za-z0-9_-]{20,64}$/.test(handle) || Number.isNaN(retention)) {
       throw new DelegationError('unknown');
+    }
+    if (this.epochOf(accountId) !== epoch) {
+      // Disconnected or signed out while the agent was installing it: take it out again.
+      await this.clearInAgent({ accountId });
+      throw new DelegationError('cancelled');
     }
     const record: Handle = { handle, provider: credential.provider, instanceId: response.instanceId, retentionExpiresAt: retention };
     this.handles.set(accountId, record);

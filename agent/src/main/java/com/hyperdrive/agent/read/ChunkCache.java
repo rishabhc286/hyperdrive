@@ -65,7 +65,10 @@ public final class ChunkCache {
     private final AtomicLong notAdmitted = new AtomicLong();
     private final Map<String, AtomicLong> bypasses = new ConcurrentHashMap<>();
 
+    private final Consumer<String> log;
+
     public ChunkCache(Path cacheRoot, RangeReader reader, Consumer<String> log) {
+        this.log = log;
         this.store = new ChunkStore(cacheRoot, log);
         this.reader = reader;
         this.pool = Executors.newFixedThreadPool(MAX_CHUNK_FETCHES, r -> {
@@ -389,6 +392,7 @@ public final class ChunkCache {
                 if (reason != null) {
                     notAdmitted.incrementAndGet();
                 }
+                log.accept(fetchEvidence(r, reason));
                 result.complete(new ChunkData(r.data(), false, reason));
             } catch (ReadException e) {
                 result.completeExceptionally(e);
@@ -398,6 +402,18 @@ public final class ChunkCache {
                 credential.inFlight.remove(cancel);
                 inflight.remove(key, this);
             }
+        }
+
+        /**
+         * Sanitized evidence for live verification: no token, handle, file id, name or content. The
+         * revision is shortened to 4 characters; the range was already validated by the reader.
+         */
+        private String fetchEvidence(ProviderReader.Result r, String reason) {
+            String responseRev = r.revision() == null ? "absent" : r.revision().equals(revision) ? "match" : "mismatch";
+            return "Cache chunk fetch: provider=" + credential.provider().name() + " requestedRev=" + shortRev(revision)
+                    + " chunk=" + (chunkStart / CHUNK_SIZE) + " range=" + chunkStart + "-" + (chunkStart + chunkLength - 1)
+                    + " validatedBytes=" + r.length() + " revisionPinned=" + r.revisionPinned()
+                    + " responseRev=" + responseRev + " admission=" + (reason == null ? "stored" : reason);
         }
 
         /** Null when published; otherwise why the (valid, served) bytes were not cached. */
@@ -424,6 +440,10 @@ public final class ChunkCache {
                 return "cache_error";
             }
         }
+    }
+
+    private static String shortRev(String rev) {
+        return rev == null ? "none" : rev.substring(0, Math.min(4, rev.length())) + "…";
     }
 
     // --- Status --------------------------------------------------------------------------------

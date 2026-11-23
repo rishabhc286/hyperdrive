@@ -193,13 +193,16 @@ name, email or provider ID.
 | Event | What happens |
 | --- | --- |
 | **Logout / session expiry** | Reads are cancelled and delegated credentials cleared (Batch 6). The agent deletes **that user's** cache directory and drops the key, and the desktop deletes the wrapped key file. If the agent can't be reached, it's restarted; the files stay on disk, unreadable without the deleted key, and are deleted at the next cache session start. |
-| **Disconnect account** | That account's credential is cleared and its reads cancelled. Its generation is bumped and its entries deleted; other accounts are untouched. If the agent can't confirm, the purge is retried at the next cache session. |
-| **Clear cache** (Settings, after confirmation) | All of the current user's entries are deleted and the generation is bumped. Reads already being served finish from memory, but nothing they fetched is published. Credentials and remote files are untouched. |
+| **Disconnect account** | That account's credential is cleared and its reads cancelled. Its generation is bumped and its encrypted files deleted; other accounts are untouched. The key is **kept** (other accounts use it). If the agent can't confirm, the purge is persisted in `cache-settings.json` and retried at the next cache session, also after an app restart. A delegation or read still in flight is discarded and its credential cleared again. |
+| **Clear cache** (Settings, after confirmation) | All of the current user's encrypted files are deleted and the generation is bumped. The key is kept. Reads already being served finish from memory, but nothing they fetched is published. Credentials and remote files are untouched. |
+| **App restart** | Nothing is deleted. The wrapped key and the encrypted files persist; the key is handed to the new agent process. |
 | **New session for another user** | Leftover directories of other users (only possible after a failed logout cleanup) are deleted. |
 
 **Deletion isn't physical erasure.** The agent deletes encrypted files, but SSD wear levelling,
-backups and file-system journals may keep old blocks. Data protection rests on the encryption and
-the deletion of the key, not on overwriting.
+backups and file-system journals may keep old blocks. Only **logout** also deletes the key; after
+Clear cache or Disconnect the key still exists, so any copy of those encrypted files would still be
+decryptable by someone who can use that key (software running as the same Windows user). No
+cryptographic-erasure claim is made for them.
 
 **The cache isn't an access check.** A hit doesn't contact the provider. The desktop fetches fresh
 metadata through the backend before every diagnostic read, which checks the connection, and a hit

@@ -45,8 +45,10 @@ The read contract separates an *observed* revision (seen in metadata), an *enfor
   makes file names unlinkable to provider IDs.
 - **No OS protection → no disk cache.** There's no plaintext fallback.
 - **Logout:** deletes the user's chunks *and* the wrapped key. If file deletion fails or the agent
-  is unreachable, the leftover ciphertext can't be decrypted, and it's removed at the next cache
-  session ("crypto-shredding" as a backstop, not a claim of physical erasure).
+  is unreachable, the leftover ciphertext can't be decrypted with any key the app still holds, and
+  it's removed at the next cache session. That backstop applies to logout only: Clear cache and
+  Disconnect keep the key (other accounts use it), so they are file deletion only. None of this is
+  a claim of physical erasure, and copies of the wrapped key in profile backups are out of scope.
 
 **Alternatives considered:**
 - **Agent-generated key under DPAPI:** that would need native access from Java, and it splits key

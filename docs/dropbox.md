@@ -36,10 +36,12 @@ stable `account_id`, never on email. The email is stored only if Dropbox marks i
      access only gives an app its own `/Apps/<app name>` folder (Dropbox: "Your app gets read and
      write access to this folder only"), so it **can't** browse the rest of the account. Don't
      choose it expecting whole-account browsing.
-2. **Permissions tab:** enable exactly these two scopes, then **Submit**:
+2. **Permissions tab:** enable exactly these three scopes, then **Submit**:
    - `account_info.read`: required by `users/get_current_account` (account identity and root).
    - `files.metadata.read`: required by `files/list_folder`, `files/list_folder/continue` and
      `files/get_metadata`.
+   - `files.content.read`: required by the agent's bounded `files/download` range reads
+     (since Batch 6).
 
    HyperDrive's authorization request asks for this subset explicitly (`scope=...`). Dropbox
    only grants scopes that are enabled on the Permissions tab.
@@ -228,19 +230,39 @@ Dropbox tokens use Batch 3's credential store unchanged:
 - **In-flight requests:** the desktop aborts that account's browsing requests that are still
   running.
 
-**Dropbox's revocation endpoint is not called.** `auth/token/revoke` "Disables the access token
-used to authenticate the call. If there is a corresponding refresh token for the access token,
-this disables that refresh token, as well as any other access tokens for that refresh token."
-Its scope would be limited to this connection's tokens, unlike Google's. HyperDrive still
-doesn't call it automatically, for three reasons:
-- After a disconnect the local credentials are already gone, which is what unlinking requires.
-- A revoke call that fails, or reaches an unreachable Dropbox, must not block or leave behind
-  credentials.
-- Calling it would be a new outbound request that this batch hasn't verified live.
+- **Local cleanup (desktop):** cancels the account's reads, clears its delegated credential in
+  the agent and purges its cached chunks. In-flight delegations or reads that finish later are
+  discarded and can't restore access.
+- **Disconnect never calls Dropbox's revocation endpoint** and never claims the authorization was
+  revoked.
 
-To also remove HyperDrive's access at Dropbox, use **Dropbox → Settings → Connected apps**.
-Whether to call `auth/token/revoke` on disconnect (best effort, after deleting local
-credentials) is a decision for a later batch.
+### Revoke access and disconnect (separate action, checkpoint 2026-11-23)
+
+`POST /api/v1/accounts/{id}/revoke-and-disconnect`, behind its own **Revoke access…** button and
+confirmation:
+1. Get this connection's access token (refreshing it if needed).
+2. Call `POST https://api.dropboxapi.com/2/auth/token/revoke` once with it (no body, no retries).
+3. **Always** disconnect locally afterwards, then run the same desktop cleanup as Disconnect.
+4. Report the outcome: `confirmed` (2xx), `failed` (a definite error such as 400/401/403/409, or
+   no usable credential) or `unknown` (no answer, timeout, 429 or 5xx).
+
+**Scope (Dropbox docs, checked 2026-11-23):** "Disables the access token used to authenticate the
+call. If there is a corresponding refresh token for the access token, this disables that refresh
+token, as well as any other access tokens for that refresh token." Each HyperDrive connection
+holds its own refresh token from its own authorization; the docs don't describe any effect on
+other grants, and a regression test (against the fake) checks that another HyperDrive user's
+connection to the same Dropbox account keeps working. **Not documented:** whether HyperDrive
+disappears from the user's Connected apps list while another grant remains; check it during live
+QA ([live-verification.md](live-verification.md)).
+
+Credentials aren't kept to retry a failed revocation. When the outcome isn't `confirmed`, the app
+shows the manual route: <https://www.dropbox.com/account/connected_apps> (Settings → Apps → choose
+the app → **Disconnect**).
+
+**Policy:** the Dropbox Developer Terms read for this checkpoint require handling user data only as
+the user instructs and only for the app's functionality (sections 3.4–3.5). They contain no
+explicit requirement to revoke on unlink. Deleting tokens on Disconnect and offering revocation as
+a separate action is consistent with them. Linking more than 500 users needs production approval.
 
 ## API summary
 

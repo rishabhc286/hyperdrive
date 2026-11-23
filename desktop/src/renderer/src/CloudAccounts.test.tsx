@@ -173,9 +173,10 @@ describe('Cloud Accounts: connected accounts', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Disconnect Dropbox box.owner@example.com' }));
 
     const confirm = screen.getByRole('group', { name: /Confirm disconnecting Dropbox/ });
-    expect(confirm).toHaveTextContent(/files stay in Dropbox/);
+    expect(confirm).toHaveTextContent(/does not revoke HyperDrive’s authorization at Dropbox/);
+    expect(confirm).toHaveTextContent(/does not delete anything in Dropbox/);
     expect(confirm).toHaveTextContent(/other accounts stay connected/);
-    expect(confirm).toHaveTextContent(/Dropbox Settings → Connected apps/);
+    expect(confirm).toHaveTextContent('dropbox.com/account/connected_apps');
     await userEvent.click(within(confirm).getByRole('button', { name: 'Keep connected' }));
     expect(mock.storage.disconnectAccount).not.toHaveBeenCalled();
 
@@ -187,6 +188,47 @@ describe('Cloud Accounts: connected accounts', () => {
     await waitFor(() => expect(screen.queryByText('box.owner@example.com')).not.toBeInTheDocument());
     expect(screen.getByText('drive.owner@example.com')).toBeInTheDocument();
     expect(mock.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('ordinary disconnect never calls provider revocation', async () => {
+    const mock = await openAccounts((m) => m.storage.listAccounts.mockResolvedValue({ ok: true, value: [BOX] }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect Dropbox box.owner@example.com' }));
+    await userEvent.click(within(screen.getByRole('group', { name: /Confirm disconnecting/ })).getByRole('button', { name: 'Disconnect' }));
+    expect(mock.storage.disconnectAccount).toHaveBeenCalledWith({ accountId: BOX.id });
+    expect(mock.storage.revokeAndDisconnect).not.toHaveBeenCalled();
+  });
+
+  it('revoke is a separate, confirmed Dropbox-only action that reports the actual outcome', async () => {
+    const mock = await openAccounts((m) => m.storage.listAccounts.mockResolvedValue({ ok: true, value: [DRIVE, BOX] }));
+    await screen.findByText('box.owner@example.com');
+    // Google Drive: no automatic revoke; manual instructions explain the project-wide effect instead.
+    expect(screen.queryByRole('button', { name: /Revoke Google Drive/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect Google Drive drive.owner@example.com' }));
+    const googleConfirm = screen.getByRole('group', { name: /Confirm disconnecting Google Drive/ });
+    expect(googleConfirm).toHaveTextContent('myaccount.google.com/permissions');
+    expect(googleConfirm).toHaveTextContent(/every Drive connection of this Google account on this server stops working/);
+    await userEvent.click(within(googleConfirm).getByRole('button', { name: 'Keep connected' }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Revoke Dropbox access and disconnect box.owner@example.com' }));
+    const confirm = screen.getByRole('group', { name: /Confirm revoking Dropbox access/ });
+    expect(confirm).toHaveTextContent(/disconnects it here even if Dropbox doesn’t confirm/);
+    expect(confirm).toHaveTextContent(/Nothing in your Dropbox is deleted/);
+    expect(mock.storage.revokeAndDisconnect).not.toHaveBeenCalled();
+
+    mock.storage.revokeAndDisconnect.mockResolvedValueOnce({
+      ok: true,
+      value: { revocation: 'unknown', reason: 'no_definite_answer', disconnected: true }
+    });
+    mock.storage.listAccounts.mockResolvedValue({ ok: true, value: [DRIVE] });
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Revoke access and disconnect' }));
+
+    expect(mock.storage.revokeAndDisconnect).toHaveBeenCalledWith({ accountId: BOX.id });
+    expect(mock.storage.disconnectAccount).not.toHaveBeenCalled();
+    const notice = await screen.findByText(/unknown whether the authorization was revoked/);
+    expect(notice).toHaveTextContent(/unknown whether the authorization was revoked/);
+    expect(notice).toHaveTextContent(/was disconnected from HyperDrive/);
+    expect(notice).toHaveTextContent('dropbox.com/account/connected_apps');
+    expect(notice).not.toHaveTextContent(/confirmed that/);
   });
 
   it('reconnect starts the flow for that account’s provider', async () => {

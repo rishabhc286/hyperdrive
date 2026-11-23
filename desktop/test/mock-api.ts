@@ -118,6 +118,9 @@ export function createMockStorage() {
     listFiles: vi.fn<StorageApi['listFiles']>(() => Promise.resolve({ ok: true, value: { items: [], continuation: null } })),
     getFileMetadata: vi.fn<StorageApi['getFileMetadata']>(() => Promise.resolve({ ok: false, error: 'not-found' })),
     disconnectAccount: vi.fn<StorageApi['disconnectAccount']>(() => Promise.resolve({ ok: true, value: null })),
+    revokeAndDisconnect: vi.fn<StorageApi['revokeAndDisconnect']>(() =>
+      Promise.resolve({ ok: true, value: { revocation: 'confirmed' as const, reason: 'provider_confirmed', disconnected: true } })
+    ),
     verifyFileRead: vi.fn<StorageApi['verifyFileRead']>(() => Promise.resolve({ ok: false, error: 'agent-unavailable' }))
   };
 }

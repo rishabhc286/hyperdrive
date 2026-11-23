@@ -61,7 +61,7 @@ const ok = (body: unknown): AgentPostResponse => ({
   body: enc.encode(JSON.stringify(body))
 });
 
-function setup(options: { keys?: CacheKeys; user?: string | null; instance?: string | null } = {}) {
+function setup(options: { keys?: CacheKeys; user?: string | null; instance?: string | null; settingsFile?: string } = {}) {
   let instance: string | null = options.instance === undefined ? 'inst-1' : options.instance;
   let user: string | null = options.user === undefined ? USER : options.user;
   const calls: { path: AgentPostPath; body: Record<string, unknown> }[] = [];
@@ -81,7 +81,7 @@ function setup(options: { keys?: CacheKeys; user?: string | null; instance?: str
     })
   };
   const keys = options.keys ?? new CacheKeyStore(fakeSafeStorage(), freshDir(), 'win32');
-  const settings = new CacheSettings(join(freshDir(), 'cache-settings.json'));
+  const settings = new CacheSettings(options.settingsFile ?? join(freshDir(), 'cache-settings.json'));
   const coordinator = new CacheCoordinator({ agent, keys, settings, currentUserId: () => user });
   return {
     coordinator,
@@ -221,6 +221,20 @@ describe('CacheCoordinator', () => {
     const clears = t.calls.filter((c) => c.path === '/local/v1/cache/clear');
     expect(clears).toHaveLength(2);
     expect(clears[1]!.body).toEqual({ accountId: ACCOUNT });
+  });
+
+  it('keeps an owed account purge across an app restart and retries it at the next session', async () => {
+    const settingsFile = join(freshDir(), 'cache-settings.json');
+    const keys = new CacheKeyStore(fakeSafeStorage(), freshDir(), 'win32');
+    const first = setup({ instance: null, settingsFile, keys }); // agent not running at disconnect time
+    await first.coordinator.forgetAccount(ACCOUNT);
+    expect(JSON.parse(readFileSync(settingsFile, 'utf8')).pendingAccountPurges).toEqual([ACCOUNT]);
+
+    const second = setup({ settingsFile, keys }); // new app run, agent up
+    await second.coordinator.ensureSession();
+    const clears = second.calls.filter((c) => c.path === '/local/v1/cache/clear');
+    expect(clears.map((c) => c.body)).toEqual([{ accountId: ACCOUNT }]);
+    expect(JSON.parse(readFileSync(settingsFile, 'utf8')).pendingAccountPurges).toEqual([]);
   });
 
   it('logout ends the agent session for the right user and deletes the key, even if the agent is gone', async () => {

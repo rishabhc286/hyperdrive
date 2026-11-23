@@ -207,6 +207,30 @@ class ChunkCacheTest {
     }
 
     @Test
+    void fetchEvidenceIsLoggedWithoutTokensIdsOrContent() throws Exception {
+        List<String> lines = new java.util.concurrent.CopyOnWriteArrayList<>();
+        ChunkCache logged = new ChunkCache(temp.resolve("logged"), source, lines::add);
+        logged.startSession(user, key, false);
+        try {
+            byte[] f = file(1000, 30);
+            source.content.put("id:secretName@" + REV1, f);
+            logged.read(box, "id:secretName", REV1, f.length, 0, 1000, new CancelToken());
+            source.confirmRevision = false;
+            source.content.put("id:other@" + REV1, f);
+            logged.read(box, "id:other", REV1, f.length, 0, 1000, new CancelToken());
+        } finally {
+            logged.shutdown();
+        }
+        List<String> evidence = lines.stream().filter(l -> l.startsWith("Cache chunk fetch:")).toList();
+        assertThat(evidence).hasSize(2);
+        assertThat(evidence.get(0)).contains("provider=DROPBOX", "range=0-999", "validatedBytes=1000", "responseRev=match",
+                "admission=stored");
+        assertThat(evidence.get(1)).contains("responseRev=absent", "admission=revision_unconfirmed");
+        assertThat(String.join(" | ", evidence)).doesNotContain(box.accessToken, box.handle, "secretName", REV1,
+                box.accountId().toString());
+    }
+
+    @Test
     void revisionsAccountsAndUsersNeverShareEntries() throws Exception {
         byte[] v1 = file(1000, 4);
         byte[] v2 = file(1000, 5);

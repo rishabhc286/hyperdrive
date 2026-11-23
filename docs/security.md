@@ -75,7 +75,11 @@ Details: [google-drive.md](google-drive.md).
 - **Rate limits:** connection start 10/min, browser leg 20/min, status polling 60/min, account
   and file APIs 300/min (per address, in memory).
 - **Disconnect is local:** it deletes HyperDrive's credentials. It does **not** revoke the
-  Google grant, and the UI and docs say so.
+  Google grant, and the UI and docs say so. Google revocation is project-wide (all clients of the
+  Cloud project, including sign-in by default), so no automatic Google revocation is offered; see
+  [google-drive.md](google-drive.md#why-there-is-no-automatic-google-revocation-checked-2026-11-23).
+  This is a public-release compliance item (Google's OAuth policies ask apps to revoke tokens they
+  no longer need).
 
 ### Dropbox (Batch 4)
 
@@ -90,12 +94,18 @@ Details: [dropbox.md](dropbox.md).
   `account_id`. Email is never used for identity.
 - **No PKCE:** Spring's default PKCE is explicitly removed for Dropbox, and a test checks it's
   absent. Protection comes from the client secret, state, binding cookie and expiry.
-- **Read-only scopes:** `account_info.read files.metadata.read`; no write or content scopes.
+- **Read-only scopes:** `account_info.read files.metadata.read files.content.read` (content read
+  since Batch 6); no write, sharing or team scopes.
 - **Root:** every files call is pinned to the stored root namespace (`Dropbox-API-Path-Root`).
   The namespace is validated as digits before it goes into the header.
 - **Continuations:** provider cursors never reach the desktop. Wrapped continuations fail for any
   other account, provider or folder, before any provider call.
-- **Disconnect:** local only. `auth/token/revoke` isn't called; see [dropbox.md](dropbox.md).
+- **Disconnect:** local only. `auth/token/revoke` isn't called and nothing claims it was.
+- **Revoke access and disconnect (separate, confirmed):** one `auth/token/revoke` call with this
+  connection's token (documented to disable that token and its refresh token), then an
+  unconditional local disconnect. The outcome is reported as `confirmed`, `failed` or `unknown`;
+  credentials are never kept to retry. See
+  [dropbox.md](dropbox.md#revoke-access-and-disconnect-separate-action-checkpoint-2026-11-23).
 
 ## Local agent (Batch 5)
 
@@ -181,23 +191,40 @@ Details: [cache.md](cache.md) and [ADR 0003](adr/0003-cache-consistency-and-key-
   - Tampered, renamed, truncated or wrong-key chunks are rejected and refetched. Plaintext is never
     written; temp files are ciphertext.
 - **Key:** a random 32-byte key per HyperDrive user, created and persisted only by the Electron main
-  process, wrapped by `safeStorage` (DPAPI). It's sent to the agent over the authenticated
-  loopback channel and kept in memory there. It never reaches preload, React or logs.
+  process, wrapped by `safeStorage`. It's sent to the agent over the authenticated loopback
+  channel and kept in memory there. It never reaches preload, React or logs.
   - **No OS protection → no disk cache.** There's no plaintext fallback.
+  - **Verified live on Windows (2026-11-23):** creation, recovery after restart, and replacement of
+    a corrupt, truncated, missing or foreign-profile key file with the real `safeStorage`; see
+    [live-verification.md](live-verification.md#6-windows-key-protection-live-result-2026-11-23).
+  - **Threat model:** `safeStorage` on Windows uses a key protected by DPAPI for the current
+    Windows user. It protects against offline disk access, other Windows users and copying the
+    files elsewhere. It does **not** protect against software running as the same Windows user.
 - **Names:** file and directory names are HMAC/SHA-256 tags. No file names, emails, provider IDs,
   tokens or handles appear on disk.
 - **Isolation:** cache keys include user, account and enforced revision, so entries are never
   shared across users, account connections or versions.
-- **Cleanup:**
-  - Logout or session expiry purges the user's chunks and deletes the wrapped key. Transient
-    phases ("checking", backend unavailable) purge nothing.
-  - Disconnect purges that account's chunks and is retried if unconfirmed. Clear cache needs
-    confirmation.
-  - Generation counters stop in-flight fetches from publishing after any of these.
-- **Not secure erasure:** deleting encrypted files doesn't overwrite disk blocks. Protection rests
-  on encryption and key deletion.
+- **Cleanup** (what is deleted, precisely):
+  - **Clear cache:** deletes the user's encrypted chunk files. The key is **kept** (it's the
+    user's key for every account), so this is file deletion only, not cryptographic erasure.
+  - **Disconnect one account:** deletes that account's encrypted chunk files. The key is **kept**
+    for the user's other accounts. If the agent can't confirm, the purge is persisted and retried
+    at the next cache session, also after an app restart. Until then those files remain
+    decryptable by the retained key, though they can't be served (the account's id is gone).
+  - **Logout / session expiry:** deletes the user's chunk files **and** the wrapped key file, and
+    the agent forgets the key. Files that couldn't be deleted can't be decrypted with any key the
+    app still holds, and are deleted at the next session. Copies of the wrapped key in backups of
+    the profile aren't controlled by HyperDrive. Transient phases ("checking", backend
+    unavailable) purge nothing.
+  - **App restart:** nothing is deleted; the wrapped key and encrypted chunks persist, and the key
+    is handed to the new agent process.
+  - Generation counters and the desktop's per-account epochs stop in-flight fetches, delegations
+    and reads from publishing or restoring access after any of these.
+- **Not secure erasure:** deleting files doesn't overwrite disk blocks (SSDs, backups, journals).
 - **Not an access check:** a cache hit doesn't ask the provider whether access is still allowed. It
-  still needs a signed-in session, a connected account and a valid delegated credential.
+  still needs a signed-in session, a connected account and a valid delegated credential (retained
+  at most 20 minutes, re-issued only by the backend for a connected, owned account). Each
+  diagnostic read also fetches fresh metadata through the backend first.
 - **Renderer bridge:** IPC exposes only status counters, the budget setter (validated) and clear.
   It never exposes paths, keys or arbitrary deletion.
 

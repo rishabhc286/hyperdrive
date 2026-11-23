@@ -310,18 +310,53 @@ errors are retried **at most 2 times**, with exponential backoff and jitter.
   HyperDrive either.
 - **In-flight requests:** the desktop aborts that account's browsing requests that are still
   running.
-- **Does NOT revoke the grant at Google.** HyperDrive deliberately doesn't call Google's
-  revocation endpoint automatically, for three reasons:
-  - Revocation applies to the user's whole grant for the OAuth client, not just one HyperDrive
-    connection. Google's documentation (as read for this batch) couldn't settle whether that
-    includes every client in the project. The sign-in client may be the same client.
-  - The same Google account may be connected by another HyperDrive user through the same
-    client, so revoking could break their connection.
-  - Revocation is irreversible for the user's other sessions.
+- **Local cleanup (desktop):** cancels the account's reads, clears its delegated credential in the
+  agent, and purges its cached chunks. A delegation or read that was still in flight is discarded
+  when it finishes, and its credential is cleared again, so it can't restore access (regression
+  tests in `read-coordinator.test.ts`).
+- **Does NOT revoke the grant at Google**, and the app says so. There is no "Revoke access" action
+  for Google Drive.
 
-  To remove HyperDrive's access at Google, use **Google Account → Security → Your connections
-  to third-party apps & services**, and remove the app there. After that, any remaining
-  HyperDrive connection to that account shows **Needs reconnect**.
+### Why there is no automatic Google revocation (checked 2026-11-23)
+
+From Google's OAuth 2.0 web-server guide ("Token revocation") and OAuth policies:
+- **Endpoint:** `POST https://oauth2.googleapis.com/revoke` with `token=<access or refresh token>`
+  (form-encoded); 200 on success, 400 on error, and "it might take some time before the revocation
+  has full effect".
+- **Scope of the effect:** revoking an access token also revokes its refresh token, and revocation
+  removes all OAuth scopes the user granted to the **project**, invalidating tokens for all
+  clients registered under that project. It is per Google account and Cloud project, not per
+  HyperDrive connection.
+
+What that would mean in HyperDrive:
+- **Sign-in shares the client by default** (`GOOGLE_DRIVE_CLIENT_ID` falls back to
+  `GOOGLE_CLIENT_ID`), and even a separate client in the same project is covered. Revoking would
+  remove the account's sign-in consent too. Existing HyperDrive sessions aren't Google tokens and
+  wouldn't end, but the next Google sign-in may ask for consent again.
+- **Other connections break:** every Drive connection of the same Google account on this server
+  (another HyperDrive user, for example) shares the project-level grant and would show
+  **Needs reconnect**.
+- **Not limited to one device:** the grant lives at Google, so every device is affected.
+
+A "revoke" button here would have broader effects than its name suggests, so it is **deferred**
+until the owner approves a design (options in [progress.md](progress.md), checkpoint entry).
+
+### Removing access at Google yourself
+
+Open <https://myaccount.google.com/permissions> (**Third-party apps with account access**), choose
+HyperDrive, then **Remove access**. Google: "If you remove access, the app can't access your Google
+Account." This affects everything that Google account granted to this HyperDrive server's Google
+project, as described above. Any remaining HyperDrive connection to that account shows **Needs
+reconnect**.
+
+### Policy note for a public release
+
+Google's OAuth policies say "Revoke tokens when you no longer need access to a user's account" and
+"After the tokens are revoked, delete them permanently". HyperDrive's Disconnect deletes the tokens
+but doesn't revoke them, because revocation can't be limited to one connection. This is a
+**release-compliance issue to resolve before publishing a verified Google app**; it's acceptable
+for self-hosted development with test users. `drive.readonly` is also a restricted scope: a public
+app needs Google's verification and security assessment.
 
 ## Manual QA (requires real Google credentials)
 

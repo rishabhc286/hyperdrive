@@ -5,6 +5,7 @@ import type {
   FilePage,
   ProviderAvailability,
   StorageFile,
+  RevokeResult,
   StorageProvider
 } from '../../shared/storage';
 import { parseAccount, parseConnectionStatus, parseFile, parseFilePage, parseProviders } from '../storage/parse';
@@ -228,6 +229,24 @@ export class BackendApi {
 
   async disconnectAccount(accessToken: string, accountId: string): Promise<void> {
     await this.send('DELETE', `/api/v1/accounts/${encodeURIComponent(accountId)}`, undefined, accessToken, [204]);
+  }
+
+  /** Provider-side revocation (Dropbox only), then local disconnect. Re-parsed field by field. */
+  async revokeAndDisconnect(accessToken: string, accountId: string): Promise<RevokeResult> {
+    const path = `/api/v1/accounts/${encodeURIComponent(accountId)}/revoke-and-disconnect`;
+    const body = await this.json(await this.send('POST', path, undefined, accessToken, [200]));
+    const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+    const revocation = record['revocation'];
+    const reason = record['reason'];
+    if (
+      (revocation !== 'confirmed' && revocation !== 'failed' && revocation !== 'unknown') ||
+      typeof reason !== 'string' ||
+      !/^[a-z_]{1,64}$/.test(reason) ||
+      typeof record['disconnected'] !== 'boolean'
+    ) {
+      throw new UnexpectedResponseError();
+    }
+    return { revocation, reason, disconnected: record['disconnected'] };
   }
 
   private async send(
