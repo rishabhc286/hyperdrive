@@ -438,6 +438,11 @@ How the agent reads ranges is described in
   without a size aren't shown on the drive.
 - Not verified live (no OAuth client). See [virtual-drive.md](virtual-drive.md).
 
+### Batch 10 status
+
+Live Drive checks are **not executed** (no OAuth client configured). Fixture runs show Google reads
+uncached with 1.0× amplification and 0 cache bytes. Matrix: [verification.md](verification.md).
+
 ### Manual QA: content reads (requires real Google credentials)
 
 Not executed yet.

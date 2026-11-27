@@ -316,6 +316,14 @@ Details: [virtual-drive.md](virtual-drive.md) and [ADR 0005](adr/0005-mounted-co
   or a new attempt.
 - **Refreshes:** single-flight. The access token is refreshed 30 s before expiry.
 
+## Batch 10 review
+
+Findings and the dependency scan are in [verification.md](verification.md#security-review-batch-10).
+One process-ownership fix: a forced agent stop now ends the owned child's **process tree** by PID
+(the Oracle `javapath` launcher otherwise left the real JVM running); nothing is ever terminated
+by name. DPAPI (via Electron `safeStorage`) was tested live: it protects the cache key against other
+Windows users and offline disk access, **not** against software running as the same Windows user.
+
 ## Known limitations
 
 - **Cached content and revoked access:** a chunk cached before access was revoked at Dropbox can

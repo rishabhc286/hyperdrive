@@ -296,6 +296,33 @@ class ChunkCacheTest {
     }
 
     @Test
+    void readsSharingOneFetchReportItsProviderBytesOnlyOnce() throws Exception {
+        final int CHUNK = ChunkCache.CHUNK_SIZE;
+        byte[] f = file(CHUNK + 100, 77);
+        source.content.put("id:share@" + REV1, f);
+        source.gate = new CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            List<java.util.concurrent.Future<ChunkCache.Served>> reads = new java.util.ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                long at = i * 1000L;
+                reads.add(pool.submit(() -> read(box, "id:share", REV1, f.length, at, at + 500)));
+            }
+            Thread.sleep(200); // all four are waiting for the same chunk
+            source.gate.countDown();
+            long reported = 0;
+            for (var r : reads) {
+                reported += r.get(5, TimeUnit.SECONDS).providerBytes();
+            }
+            assertThat(source.calls).hasSize(1); // one provider request
+            assertThat(reported).isEqualTo(CHUNK); // ...reported once, not once per waiting read
+            assertThat(cache.status().counters().get("providerBytesFetched")).isEqualTo((long) CHUNK);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void theSharedFetchIsCancelledWhenEveryWaiterLeaves() throws Exception {
         source.content.put("id:g@" + REV1, file(1000, 8));
         source.gate = new CountDownLatch(1);

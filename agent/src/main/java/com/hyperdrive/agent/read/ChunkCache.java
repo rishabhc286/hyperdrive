@@ -44,7 +44,12 @@ public final class ChunkCache {
             long providerBytes, long cacheBytes, String revision) {
     }
 
-    private record ChunkData(byte[] data, boolean hit, String notAdmitted) {
+    /**
+     * {@code fetchedHere}: this read is the one the shared fetch's provider bytes are attributed to.
+     * Several reads may wait for one fetch; only one of them reports its bytes (Batch 10 fix: per-read
+     * provider-byte figures used to count a shared chunk once per waiting read).
+     */
+    private record ChunkData(byte[] data, boolean hit, String notAdmitted, boolean fetchedHere) {
     }
 
     public record Status(boolean enabled, String disabledReason, ChunkStore.Snapshot store, Map<String, Long> counters,
@@ -190,7 +195,7 @@ public final class ChunkCache {
                 String name = accountTag + "-" + CacheCrypto.hex(tag) + ".hdc";
                 byte[] hit = tryHit(s, name, tag, chunkLength);
                 if (hit != null) {
-                    parts.add(new ChunkData(hit, true, null));
+                    parts.add(new ChunkData(hit, true, null, false));
                     continue;
                 }
                 parts.add(join(s, accountTag, name, tag, credential, fileId, revision, size, chunkStart, chunkLength,
@@ -253,7 +258,9 @@ public final class ChunkCache {
                 hitCount++;
                 fromCache += n;
             } else {
-                fetched += c.data.length;
+                if (c.fetchedHere) {
+                    fetched += c.data.length;
+                }
                 if (c.notAdmitted != null) {
                     notAdmittedReason = c.notAdmitted;
                 }
@@ -287,7 +294,8 @@ public final class ChunkCache {
 
         ChunkData await() throws ReadException {
             try {
-                return mine.get(WAIT_LIMIT_MINUTES, TimeUnit.MINUTES);
+                ChunkData shared = mine.get(WAIT_LIMIT_MINUTES, TimeUnit.MINUTES);
+                return new ChunkData(shared.data(), false, shared.notAdmitted(), fetch.attributed.compareAndSet(false, true));
             } catch (ExecutionException e) {
                 throw e.getCause() instanceof ReadException re ? re : new ReadException("unavailable", 502);
             } catch (TimeoutException e) {
@@ -341,6 +349,8 @@ public final class ChunkCache {
         final ChunkStore.Gen gen;
         final CompletableFuture<ChunkData> result = new CompletableFuture<>();
         final CancelToken cancel = new CancelToken();
+        /** Set by the first waiter that receives the result: it reports the provider bytes. */
+        final java.util.concurrent.atomic.AtomicBoolean attributed = new java.util.concurrent.atomic.AtomicBoolean();
         private int waiters;
         private boolean abandoned;
 
@@ -393,7 +403,7 @@ public final class ChunkCache {
                     notAdmitted.incrementAndGet();
                 }
                 log.accept(fetchEvidence(r, reason));
-                result.complete(new ChunkData(r.data(), false, reason));
+                result.complete(new ChunkData(r.data(), false, reason, false));
             } catch (ReadException e) {
                 result.completeExceptionally(e);
             } catch (RuntimeException e) {

@@ -41,7 +41,15 @@ public final class FixtureAgentMain {
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final Pattern RANGE = Pattern.compile("^bytes=(\\d+)-(\\d+)$");
 
-    record FixtureFile(String id, String provider, long size, long seed, String rev, long delayMs) {
+    /**
+     * Test-only network switch, set through {@code GET /fixture/network?state=up|down} on the fixture
+     * provider (loopback): while down, every content response is cut off after its headers and a few
+     * bytes, like a dropped connection.
+     */
+    private static volatile boolean networkDown;
+
+    /** {@code source}: optional local file whose bytes are served instead of generated ones (app tests). */
+    record FixtureFile(String id, String provider, long size, long seed, String rev, long delayMs, String source) {
     }
 
     private FixtureAgentMain() {
@@ -63,7 +71,8 @@ public final class FixtureAgentMain {
         Map<String, FixtureFile> files = new HashMap<>();
         for (JsonNode f : spec.get("files")) {
             files.put(f.get("id").asString(), new FixtureFile(f.get("id").asString(), f.get("provider").asString(),
-                    f.get("size").asLong(), f.get("seed").asLong(), f.path("rev").asString(null), f.path("delayMs").asLong(0)));
+                    f.get("size").asLong(), f.get("seed").asLong(), f.path("rev").asString(null), f.path("delayMs").asLong(0),
+                    f.path("source").asString(null)));
         }
         String googleToken = spec.get("googleToken").asString();
         String dropboxToken = spec.get("dropboxToken").asString();
@@ -110,7 +119,17 @@ public final class FixtureAgentMain {
             serve(ex, f, Map.of("Dropbox-API-Result", JSON.writeValueAsString(Map.of("id", f.id(), "rev", f.rev(),
                     "size", f.size(), "name", "fixture"))));
         });
+        server.createContext("/fixture/network", ex -> {
+            String q = String.valueOf(ex.getRequestURI().getQuery());
+            networkDown = q.equals("state=down");
+            byte[] ok = ("{\"networkDown\":" + networkDown + "}").getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, ok.length);
+            try (OutputStream out = ex.getResponseBody()) {
+                out.write(ok);
+            }
+        });
         server.start();
+        System.err.println("[fixture] provider control port " + server.getAddress().getPort());
         URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
         Agent agent = new Agent(System.in, System.out, System.err, Clock.systemUTC(), Duration.ofSeconds(10),
                 new ProviderEndpoints(base.resolve("/drive/v3"), base.resolve("/2")), d -> Thread.sleep(d.toMillis()),
@@ -147,12 +166,23 @@ public final class FixtureAgentMain {
             long length = end - start + 1;
             ex.sendResponseHeaders(206, length);
             byte[] buffer = new byte[64 * 1024];
-            try (OutputStream out = ex.getResponseBody()) {
+            java.io.RandomAccessFile source = f.source() == null ? null : new java.io.RandomAccessFile(f.source(), "r");
+            try (source; OutputStream out = ex.getResponseBody()) {
                 long p = start;
                 while (p <= end) {
                     int n = (int) Math.min(buffer.length, end - p + 1);
-                    for (int i = 0; i < n; i++) {
-                        buffer[i] = (byte) gen(f.seed(), p + i);
+                    if (source != null) {
+                        source.seek(p);
+                        source.readFully(buffer, 0, n);
+                    } else {
+                        for (int i = 0; i < n; i++) {
+                            buffer[i] = (byte) gen(f.seed(), p + i);
+                        }
+                    }
+                    if (networkDown) {
+                        out.write(buffer, 0, Math.min(n, 100));
+                        out.flush();
+                        throw new IOException("fixture: simulated network drop"); // closes the connection
                     }
                     out.write(buffer, 0, n);
                     p += n;

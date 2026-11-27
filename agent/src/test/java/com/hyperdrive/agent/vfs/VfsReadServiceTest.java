@@ -574,6 +574,29 @@ class VfsReadServiceTest {
         assertThat(stats.toString()).doesNotContain(h, TOKEN, "id:s", box.toString(), temp.toString());
     }
 
+    @Test
+    void aShortLivedCredentialTriggersAtMostOneBackgroundRenewalPerMinute() throws Exception {
+        googleFile("gshort", 1000, 1);
+        // A delegation with only 90 s left (less than the 2-min renew-ahead margin) is still usable.
+        credentials.install(Provider.GOOGLE_DRIVE, drive, TOKEN, clock.instant().plusSeconds(90), null);
+        String h = service.open(mount, drive, "gshort", 1000).handle();
+        for (int i = 0; i < 20; i++) {
+            long at = i * 10L;
+            assertThat(code(() -> read(h, at, 10))).isEqualTo("ok"); // reads never wait for it
+        }
+        assertThat(broker.requested.get()).isEqualTo(1);
+        assertThat(broker.poll(mount.generation(), Duration.ZERO)).containsExactly(drive);
+        // The answer is again short-lived (e.g. a misbehaving backend): no request on every read.
+        broker.install(mount.generation(), Provider.GOOGLE_DRIVE, drive, TOKEN, clock.instant().plusSeconds(90), null);
+        for (int i = 0; i < 20; i++) {
+            read(h, 0, 10);
+        }
+        assertThat(broker.requested.get()).isEqualTo(1);
+        clock.advance(CredentialBroker.RENEW_AHEAD_INTERVAL);
+        read(h, 0, 10);
+        assertThat(broker.requested.get()).isEqualTo(2);
+    }
+
     interface Call {
         Object run() throws Exception;
     }

@@ -354,6 +354,13 @@ How the agent reads ranges is described in
   app); in particular whether Dropbox sends `Dropbox-API-Result` on 206 responses decides whether
   any Dropbox chunk is cached at all. See [virtual-drive.md](virtual-drive.md).
 
+### Batch 10 status
+
+The cache decision still lacks live evidence: whether Dropbox returns `Dropbox-API-Result` (with
+`rev`) on 206 ranged downloads has **not been observed** (no Dropbox app configured). Until it is, the
+documented outcome is either admission (if it does) or `revision_unconfirmed` bypass (if it
+doesn't); the rule is not loosened. Matrix: [verification.md](verification.md).
+
 ### Manual verification: content reads (requires a Dropbox app)
 
 Not executed yet.

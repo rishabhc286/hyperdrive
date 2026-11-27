@@ -226,6 +226,20 @@ be served from a cached chunk until the account is disconnected or the user logs
 Counters reset when the agent restarts. There is no "savings" metric, because there's no measured
 baseline to compare against.
 
+## Live evidence so far (Batch 10)
+
+- **Real key protection:** with the real Electron `safeStorage` (DPAPI) and the real agent, a key
+  created in one app start was recovered in the next and the encrypted cache answered a read (hit,
+  exact SHA-256). Corrupted, truncated or missing key files led to a new key, purge of the user's old
+  entries and working reads. No cache file contained plaintext.
+- **Dropbox revision proof on ranged downloads: not yet observed** (no Dropbox app configured). The
+  rule is unchanged: a chunk is admitted only when `Dropbox-API-Result` proves the requested
+  revision; otherwise it is served uncached.
+- **Counter fix:** reads that waited for the same chunk fetch each reported the chunk's provider
+  bytes; now one read does. The cache's own `providerBytesFetched` was always correct.
+- **Measured cost of whole-chunk caching:** a cold random 4 KiB read fetches the whole 4 MiB chunk
+  (1024× amplification); sequential reads fetch each chunk once (1.0×).
+
 ## The mounted drive (Batch 9)
 
 - Reads through the virtual drive use **this cache unchanged**: same eligibility (Dropbox

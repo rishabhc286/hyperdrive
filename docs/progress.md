@@ -1,5 +1,47 @@
 # Progress
 
+## Batch 10: verification, defect fixing and reliability hardening (2026-11-27, in progress)
+
+Full record: [verification.md](verification.md). **Live provider checks are pending the OAuth setup**
+(no Google OAuth client or Dropbox app configured yet); everything below ran on this PC.
+
+### Baseline
+
+Repository at `fd80840`, clean. Backend 228, agent 111, desktop 296, native 43 passed; typecheck,
+lint and build clean. Batch 9 complete; nothing blocked.
+
+### Defects found and fixed
+
+- **Orphaned agent JVM** when `java` comes from PATH (Oracle `javapath` launcher): forced stops now
+  end the owned child's process tree by PID (`taskkill /PID n /T /F`, absolute System32 path).
+- **Overstated "downloaded" counters** when reads share one chunk fetch: bytes now attributed once.
+- **Possible renew-ahead loop** with short-lived credentials: at most one per account per minute.
+
+### New opt-in checks (real mount / real OS components, fixture provider)
+
+`vfs/tests/reliability-check.mjs` (latency, throughput, amplification, memory over 5 GiB, renewal
+during a long read, backend outage, network drop, retry storm, desktop process killed),
+`vfs/tests/app-compat-check.mjs` (Explorer shell, zip folder, thumbnails, WIC, Edge PDF, VLC
+play/seek, concurrent apps), `vfs/tests/key-protection-check.mjs` (real Electron safeStorage/DPAPI,
+restart, encrypted cache hit, corrupted/truncated/missing key, plaintext scan). Shared harness in
+`vfs/tests/lib/`; the fixture provider gained a test-only network switch and file-backed entries.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| Backend `mvnw verify` | 228 passed |
+| Agent `mvnw verify` | 113 passed (+2 regression tests) |
+| Desktop typecheck, lint, build | Pass |
+| Desktop Vitest | 298 passed (+2 `taskkill` argv tests) |
+| Native build and `hdvfs_tests` | Pass; 43 tests |
+| `reliability-check.mjs` | Passed on this PC: 20/20 (fixture provider) |
+| `app-compat-check.mjs` | Passed on this PC: 21/21 (synthetic files, fixture provider) |
+| `key-protection-check.mjs` | **Passed live** (real DPAPI): 11/11 |
+| `content-mount-check.mjs`, `agent-mount-check.mjs`, `fixture-mount-check.mjs` | Re-run after this batch's fixes: 44/44, 13/13, 24/24 |
+| `npm audit` (desktop), OSV (84 Maven artifacts) | 0 known vulnerabilities; native deps not scanned |
+| Live Google/Dropbox sign-in, browsing, reads, cache evidence, live apps | **Not executed:** OAuth not configured |
+
 ## Batch 9: read-only file content through the mounted drive (2026-11-27)
 
 ### Foundation check before starting

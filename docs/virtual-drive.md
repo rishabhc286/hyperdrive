@@ -274,6 +274,14 @@ Windows, bytes downloaded from the cloud, bytes from the local encrypted cache, 
 for the last read problem (reconnect needed, no content permission, session ended, network,
 timeout, rate limited, file changed, unsupported, not found). No file names, ids or bytes.
 
+## Batch 10 verification
+
+Reliability, application and key-protection checks ran on a real mount with the fixture provider;
+results, measurements and the manual QA checklist are in [verification.md](verification.md).
+Highlights: 5 GiB sequential read at 88 MiB/s (Dropbox path) with flat memory; backend outage leaves
+open files readable; a dropped connection fails a read in < 1 s; 30 probes of a deleted file cause 1
+backend lookup; killing the desktop process cleans up agent and VFS in < 1 s.
+
 ## Tested matrix
 
 | What | How | Result |
@@ -287,7 +295,9 @@ timeout, rate limited, file changed, unsupported, not found). No file names, ids
 | Create, write-open, delete, rename, mkdir rejected | Node.js `fs` | Pass |
 | Unmount with an outstanding read, VFS killed, agent killed during a read | Node.js + process control | Pass |
 | Google Drive / Dropbox live | — | **Not run** (no OAuth credentials) |
-| Explorer double-click, media players, PDF viewers, Office, memory-mapped workloads, byte-range locks | — | **Not run**; no compatibility claimed |
+| Explorer shell copy engine, properties, zip folder, thumbnail request | Shell COM on the mount (Batch 10) | Pass |
+| Windows Imaging Component (PNG/JPEG), Edge headless PDF, VLC play + seek (MP4/WAV), two apps at once | Batch 10 `app-compat-check.mjs` | Pass |
+| Interactive Explorer use, preview pane, Notepad, Paint, Photos, Acrobat, Media Player, Office, memory-mapped workloads, byte-range locks | — | **Not run**; no compatibility claimed |
 
 ## Not implemented / limitations
 

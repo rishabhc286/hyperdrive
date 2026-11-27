@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
 import type { AgentChild, AgentPath, AgentPostPath, AgentPostResponse } from './agent-manager';
@@ -8,7 +8,34 @@ import { parseJavaMajor } from './java-discovery';
 
 export function spawnAgent(command: string, args: readonly string[]): AgentChild {
   // shell:false (the default) and an argv array: paths are never parsed by a shell.
-  return spawn(command, [...args], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(command, [...args], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  if (process.platform !== 'win32') return child;
+  // Windows: "java" from PATH is often Oracle's javapath launcher, which starts the real JVM as its
+  // own child. Killing only the launcher would orphan a hung JVM (verified on this platform), so a
+  // forced stop ends the process TREE of the child this manager spawned, by PID (never by name).
+  const pid = child.pid;
+  return Object.assign(child, {
+    kill: (): boolean => (pid === undefined ? ChildProcess.prototype.kill.call(child) : killProcessTree(pid, child))
+  });
+}
+
+/** taskkill from System32 by absolute path (no PATH lookup), for one owned PID and its descendants. */
+export function taskkillArgs(pid: number, systemRoot: string | undefined): { command: string; args: string[] } {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('invalid pid');
+  const root = systemRoot && /^[A-Za-z]:\\[^"<>|?*]*$/.test(systemRoot) ? systemRoot : 'C:\\Windows';
+  return { command: `${root}\\System32\\taskkill.exe`, args: ['/PID', String(pid), '/T', '/F'] };
+}
+
+function killProcessTree(pid: number, child: ChildProcess): boolean {
+  try {
+    const { command, args } = taskkillArgs(pid, process.env['SystemRoot']);
+    execFile(command, args, { shell: false, windowsHide: true, timeout: 10_000 }, (error) => {
+      if (error) ChildProcess.prototype.kill.call(child); // fall back to the child itself
+    });
+    return true;
+  } catch {
+    return ChildProcess.prototype.kill.call(child);
+  }
 }
 
 export function checkJava(command: string): Promise<{ major: number } | { error: 'not-found' | 'unknown' }> {

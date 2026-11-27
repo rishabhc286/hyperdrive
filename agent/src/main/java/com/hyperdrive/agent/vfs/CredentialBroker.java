@@ -41,6 +41,8 @@ public final class CredentialBroker {
 
     /** A live credential with less than this left triggers a background renewal. */
     static final Duration RENEW_AHEAD = Duration.ofMinutes(2);
+    /** At most one background (renew-ahead) request per account in this interval (no renewal loops). */
+    static final Duration RENEW_AHEAD_INTERVAL = Duration.ofMinutes(1);
     static final Duration TRANSIENT_BACKOFF = Duration.ofSeconds(15);
     static final Duration REJECTION_BACKOFF = Duration.ofSeconds(60);
     /** An undelivered/unanswered request is offered to the poller again after this long. */
@@ -77,6 +79,7 @@ public final class CredentialBroker {
     private final Map<UUID, Pending> pending = new LinkedHashMap<>();
     private final Map<UUID, Failure> failures = new HashMap<>();
     private final Map<UUID, Instant> lastRejectionRenewal = new HashMap<>();
+    private final Map<UUID, Instant> lastRenewAhead = new HashMap<>();
     private long generation = -1;
     final AtomicLong requested = new AtomicLong();
     final AtomicLong installed = new AtomicLong();
@@ -97,6 +100,7 @@ public final class CredentialBroker {
         pending.clear();
         failures.clear();
         lastRejectionRenewal.clear();
+        lastRenewAhead.clear();
         lastFailure = null;
         notifyAll();
     }
@@ -109,6 +113,7 @@ public final class CredentialBroker {
         }
         failures.remove(accountId);
         lastRejectionRenewal.remove(accountId);
+        lastRenewAhead.remove(accountId);
     }
 
     /**
@@ -129,8 +134,14 @@ public final class CredentialBroker {
                     if (live.provider() != provider) {
                         throw new ReadException("invalid_request", 400);
                     }
-                    if (Duration.between(clock.instant(), live.retentionExpiresAt()).compareTo(RENEW_AHEAD) < 0) {
-                        request(accountId); // background: the current credential keeps working meanwhile
+                    Instant now = clock.instant();
+                    Instant lastAhead = lastRenewAhead.get(accountId);
+                    if (Duration.between(now, live.retentionExpiresAt()).compareTo(RENEW_AHEAD) < 0
+                            && (lastAhead == null || !now.isBefore(lastAhead.plus(RENEW_AHEAD_INTERVAL)))) {
+                        // Background: the current credential keeps working meanwhile. Bounded so that a
+                        // delegation that is itself short-lived can't cause a request on every read.
+                        lastRenewAhead.put(accountId, now);
+                        request(accountId);
                     }
                     return live.handle();
                 }

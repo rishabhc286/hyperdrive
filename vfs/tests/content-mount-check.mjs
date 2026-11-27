@@ -112,7 +112,7 @@ writeFileSync(specPath, JSON.stringify({
 const cpFile = join(agentDir, 'target', 'fixture-classpath.txt');
 const classpath = [join(agentDir, 'target', 'classes'), join(agentDir, 'target', 'test-classes'), readFileSync(cpFile, 'utf8').trim()].join(';');
 const secret = randomBytes(32).toString('base64url');
-const agent = spawn('java', ['-cp', classpath, 'com.hyperdrive.agent.FixtureAgentMain', specPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+const agent = spawn(process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', 'java.exe') : 'java', ['-cp', classpath, 'com.hyperdrive.agent.FixtureAgentMain', specPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 agent.stdin.write(`${JSON.stringify({ protocolVersion: 1, secret, dataDir: join(work, 'agent'), logLevel: 'INFO', requestTimeoutMs: 30000 })}\n`);
 let agentErr = '';
 agent.stderr.on('data', (c) => (agentErr += c));

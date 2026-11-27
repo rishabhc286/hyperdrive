@@ -100,6 +100,10 @@ The launch website is a separate project and is not part of this repository.
   - Details: [docs/virtual-drive.md](docs/virtual-drive.md) ·
     [ADR 0004](docs/adr/0004-vfs-transport-and-scoped-metadata-authorization.md).
 
+- **Batch 10 (verification and hardening, in progress):** reliability, application and real
+  Windows key-protection checks on a real mount ([docs/verification.md](docs/verification.md));
+  three defects fixed (orphaned JVM via the Java launcher, overstated download counters, a possible
+  renewal loop). **Live Google Drive and Dropbox checks are still pending OAuth configuration.**
 - **Batch 9 (file content through the drive):**
   - Applications can read files on the mounted drive. The VFS asks the agent for byte ranges
     through **opaque, agent-owned read handles**; the agent reads them with the existing Batch 6/7
