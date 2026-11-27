@@ -17,11 +17,14 @@ constexpr UINT32 kAllocationUnit = 4096;
 
 // Per-open state. Directory enumeration keeps ONE snapshot from the first (marker-less) read until
 // the handle closes or the caller rewinds, so continuation markers always refer to the same list.
+// Files carry their (lazily opened) agent read context, which lives until Close: WinFsp may deliver
+// reads (e.g. paging I/O) after Cleanup, and Close is always the final call for an open.
 struct OpenNode {
     Node node;
     Node parent;
     std::mutex mutex;
     std::shared_ptr<const DirectorySnapshot> enumeration;
+    ContentService::OpenFile content;
 };
 
 HyperDriveFs* Self(FSP_FILE_SYSTEM* fs) { return static_cast<HyperDriveFs*>(fs->UserContext); }
@@ -31,8 +34,8 @@ void FillInfo(const HyperDriveFs& self, const Node& n, FSP_FSCTL_FILE_INFO* info
     if (n.IsDirectory()) {
         info->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
     } else {
-        // OFFLINE: content isn't locally available (and not readable through the drive yet), which also
-        // tells Explorer not to open files for previews or thumbnails.
+        // OFFLINE: content isn't stored locally; it is read on demand from the cloud through the agent.
+        // It also tells Explorer not to open files for previews or thumbnails (no unrequested downloads).
         info->FileAttributes = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_OFFLINE;
         info->FileSize = n.size;
         info->AllocationSize = (n.size + kAllocationUnit - 1) / kAllocationUnit * kAllocationUnit;
@@ -117,13 +120,19 @@ VOID Cleanup(FSP_FILE_SYSTEM*, PVOID context, PWSTR, ULONG) {
     open->enumeration.reset();
 }
 
-VOID Close(FSP_FILE_SYSTEM*, PVOID context) { delete static_cast<OpenNode*>(context); }
-
-NTSTATUS Read(FSP_FILE_SYSTEM*, PVOID context, PVOID, UINT64 offset, ULONG, PULONG transferred) {
+VOID Close(FSP_FILE_SYSTEM* fs, PVOID context) {
     auto* open = static_cast<OpenNode*>(context);
-    *transferred = 0;
-    if (open->node.IsDirectory()) return STATUS_INVALID_DEVICE_REQUEST;
-    return StatusForRead(open->node.size, offset);
+    if (!open->node.IsDirectory()) Self(fs)->Content().Close(open->content);  // ends the agent read context
+    delete open;
+}
+
+// Blocking (no STATUS_PENDING): bounded by the agent's 45 s read deadline and the transport timeouts.
+NTSTATUS Read(FSP_FILE_SYSTEM* fs, PVOID context, PVOID buffer, UINT64 offset, ULONG length, PULONG transferred) {
+    auto* open = static_cast<OpenNode*>(context);
+    std::uint32_t done = 0;
+    NTSTATUS status = Self(fs)->Content().Read(open->content, open->node, offset, length, buffer, done);
+    *transferred = NT_SUCCESS(status) ? done : 0;
+    return status;
 }
 
 NTSTATUS Write(FSP_FILE_SYSTEM*, PVOID, PVOID, UINT64, ULONG, BOOLEAN, BOOLEAN, PULONG, FSP_FSCTL_FILE_INFO*) {
@@ -220,7 +229,8 @@ FSP_FILE_SYSTEM_INTERFACE g_interface = MakeInterface();
 
 }  // namespace
 
-HyperDriveFs::HyperDriveFs(MetadataTree& tree, std::wstring volumeLabel) : tree_(tree), label_(std::move(volumeLabel)) {}
+HyperDriveFs::HyperDriveFs(MetadataTree& tree, ContentService& content, std::wstring volumeLabel)
+    : tree_(tree), content_(content), label_(std::move(volumeLabel)) {}
 
 HyperDriveFs::~HyperDriveFs() {
     Stop();

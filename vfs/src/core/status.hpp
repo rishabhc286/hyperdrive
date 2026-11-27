@@ -14,13 +14,12 @@
 
 namespace hd {
 
-// How a metadata fault surfaces to Windows.
+// How a metadata fault (lookup, listing) surfaces to Windows.
 NTSTATUS StatusForFault(Fault fault);
 
-// Content reads are not implemented in Batch 8. Reads at or past the end of a file report
-// STATUS_END_OF_FILE (true for zero-byte files); any other read fails explicitly with
-// STATUS_NOT_SUPPORTED. Never success with fabricated or zero bytes.
-NTSTATUS StatusForRead(std::uint64_t fileSize, std::uint64_t offset);
+// How a content fault (OpenRead / Read through an agent read handle) surfaces to a Read callback
+// (ADR 0005). Never success: a failed read reports 0 bytes and one of these statuses.
+NTSTATUS StatusForContentFault(Fault fault);
 
 // Every mutation on this read-only volume.
 constexpr NTSTATUS kReadOnlyStatus = STATUS_MEDIA_WRITE_PROTECTED;

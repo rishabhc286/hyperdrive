@@ -27,7 +27,7 @@ describe('Local agent status', () => {
     expect(card()).toHaveTextContent(/read bounded byte ranges \(at most 4 MiB at a time\)/);
     expect(card()).not.toHaveTextContent(/doesn’t cache anything or create a drive yet/);
     // The other surfaces keep their own, separate status.
-    expect(await screen.findByRole('article', { name: 'Virtual drive' })).toHaveTextContent(/Folders and file details are available/);
+    expect(await screen.findByRole('article', { name: 'Virtual drive' })).toHaveTextContent(/Read-only virtual drive/);
     expect(screen.getByRole('article', { name: 'Backend' })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/mounted|cached \d|MB\/s|Drive connected/i);
   });

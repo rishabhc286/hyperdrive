@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { VirtualDrivePrerequisite } from '../../shared/vfs';
 import type { MountRequest, VfsEvent } from './vfs-manager';
 import { VfsMountError } from './vfs-manager';
-import { VirtualDriveCoordinator, type VirtualDriveDeps } from './virtual-drive';
+import { parseActivity, readIssueFor, VirtualDriveCoordinator, type VirtualDriveDeps } from './virtual-drive';
 
 const USER = '22222222-3333-4444-8555-666666666666';
 const CAP = `hdv_${'C'.repeat(43)}`;
@@ -173,5 +173,58 @@ describe('VirtualDriveCoordinator', () => {
     await t.drive.close();
     expect((await t.drive.mount()).state).not.toBe('mounted');
     expect(t.vfs.mount).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts credential renewal for the mounted generation and stops it first on every teardown', async () => {
+    const order: string[] = [];
+    const pump = { start: vi.fn(async (g: number) => void order.push(`start:${g}`)), stop: vi.fn(() => void order.push('stop')) };
+    const t = setup({ pump });
+    t.vfs.unmount.mockImplementation(async () => void order.push('vfs-unmount'));
+    await t.drive.mount();
+    expect(pump.start).toHaveBeenCalledWith(1);
+    await t.drive.teardown(); // logout / disconnect / agent restart
+    expect(order).toEqual(['start:1', 'stop', 'vfs-unmount']);
+    await t.drive.mount(); // a new mount is a new generation; the old one is never served again
+    expect(pump.start).toHaveBeenLastCalledWith(2);
+    await t.drive.unmount();
+    expect(order.slice(-2)).toEqual(['stop', 'vfs-unmount']);
+  });
+
+  it('a failed mount never starts renewal', async () => {
+    const pump = { start: vi.fn(async () => undefined), stop: vi.fn() };
+    const t = setup({ pump });
+    t.vfs.mount.mockRejectedValueOnce(new VfsMountError('startup-timeout'));
+    expect((await t.drive.mount()).state).toBe('failed');
+    expect(pump.start).not.toHaveBeenCalled();
+  });
+
+  it("reports the agent's real counters only while mounted", async () => {
+    const readStatus = vi.fn(async (): Promise<unknown> => ({
+      active: true,
+      generation: 1,
+      reads: { openHandles: 3, reads: 40, bytesReturned: 1000, providerBytes: 4_194_304, cacheBytes: 500, lastError: 'cancelled', renewals: { lastFailure: null } }
+    }));
+    const t = setup({ readStatus });
+    expect((await t.drive.status()).activity).toBeNull();
+    const mounted = await t.drive.mount();
+    expect(mounted.activity).toEqual({ openFiles: 3, reads: 40, bytesReturned: 1000, providerBytes: 4_194_304, cacheBytes: 500, lastIssue: null });
+    readStatus.mockRejectedValueOnce(new Error('agent gone'));
+    expect((await t.drive.status()).activity).toBeNull(); // unknown, not invented
+    await t.drive.unmount();
+    expect((await t.drive.status()).activity).toBeNull();
+  });
+
+  it('maps agent read codes to safe user-level issues', () => {
+    expect(readIssueFor('needs_reconnect')).toBe('reconnect-needed');
+    expect(readIssueFor('content_permission_missing')).toBe('content-permission-missing');
+    expect(readIssueFor('authorization_expired')).toBe('session-expired');
+    expect(readIssueFor('file_changed')).toBe('file-changed');
+    expect(readIssueFor('timeout')).toBe('timeout');
+    expect(readIssueFor('stale_handle')).toBeNull();
+    expect(readIssueFor('something-new')).toBe('other');
+    expect(
+      parseActivity({ reads: { reads: -5, bytesReturned: 1.5, renewals: { lastFailure: 'needs_reconnect' }, lastError: 'timeout' } })
+    ).toEqual({ openFiles: 0, reads: 0, bytesReturned: 0, providerBytes: 0, cacheBytes: 0, lastIssue: 'reconnect-needed' });
+    expect(parseActivity('nope')).toBeNull();
   });
 });

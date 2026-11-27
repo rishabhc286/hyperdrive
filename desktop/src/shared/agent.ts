@@ -21,12 +21,14 @@ export type AgentErrorCode =
   | 'health-failed'
   | 'unexpected-exit';
 
-/** What the agent itself reports it can do. All false in this build. */
+/** What the agent itself reports it can do. */
 export interface AgentCapabilities {
   readonly providerReads: boolean;
   readonly rangeReads: boolean;
   readonly chunkCache: boolean;
   readonly virtualDrive: boolean;
+  /** Batch 9: read-only file content through the mounted drive. */
+  readonly virtualDriveContent: boolean;
 }
 
 export interface AgentStatus {

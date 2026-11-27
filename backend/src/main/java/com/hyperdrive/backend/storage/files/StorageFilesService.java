@@ -76,11 +76,20 @@ public class StorageFilesService {
     }
 
     public ProviderFile get(UUID userId, UUID accountId, String fileId) {
+        return getOwned(userId, accountId, fileId).file();
+    }
+
+    /** A file's metadata together with the provider of the (owned) account it belongs to. */
+    public record OwnedFile(StorageProvider provider, ProviderFile file) {
+    }
+
+    public OwnedFile getOwned(UUID userId, UUID accountId, String fileId) {
         OwnedAccount account = owned(userId, accountId);
         if (!account.provider().isValidFileId(fileId)) {
             throw invalid("fileId");
         }
-        return call(account, (browser, token) -> browser.getFile(token, account.root(), fileId));
+        return new OwnedFile(account.provider(),
+                call(account, (browser, token) -> browser.getFile(token, account.root(), fileId)));
     }
 
     private OwnedAccount owned(UUID userId, UUID accountId) {

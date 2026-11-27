@@ -14,6 +14,8 @@ import java.util.HashMap;
 import java.util.Set;
 import java.time.format.DateTimeParseException;
 import com.hyperdrive.agent.vfs.BackendMetadataClient;
+import com.hyperdrive.agent.vfs.CredentialBroker;
+import com.hyperdrive.agent.vfs.VfsReadService;
 import com.hyperdrive.agent.vfs.MetadataSource;
 import com.hyperdrive.agent.vfs.MountRegistry;
 import com.hyperdrive.agent.vfs.VfsMetadataService;
@@ -78,6 +80,9 @@ public final class Agent {
     private final MountRegistry mounts;
     private volatile MetadataSource metadataSource;
     private VfsMetadataService vfs;
+    /** Batch 9: mounted content reads (agent-owned read contexts) and their credential renewal. */
+    private CredentialBroker broker;
+    private VfsReadService vfsReads;
 
     public Agent(InputStream stdin, PrintStream stdout, PrintStream stderr, Clock clock, Duration bootstrapTimeout) {
         this(stdin, stdout, stderr, clock, bootstrapTimeout, ProviderEndpoints.PRODUCTION, d -> Thread.sleep(d),
@@ -149,6 +154,8 @@ public final class Agent {
                 cache = new ChunkCache(bootstrap.dataDir().resolve("cache"), provider, log::info);
                 reads = new ReadService(credentials, provider, cache);
                 vfs = new VfsMetadataService(metadataSource, clock);
+                broker = new CredentialBroker(credentials, clock);
+                vfsReads = new VfsReadService(reads, broker, metadataSource, clock);
                 Map<String, LocalApiServer.PostRoute> posts = new HashMap<>();
                 posts.put("/local/v1/credentials", this::installCredential);
                 posts.put("/local/v1/credentials/clear", this::clearCredentials);
@@ -161,6 +168,10 @@ public final class Agent {
                 posts.put("/local/v1/vfs/mount", this::vfsMount);
                 posts.put("/local/v1/vfs/mount/grant", this::vfsGrant);
                 posts.put("/local/v1/vfs/mount/revoke", this::vfsRevoke);
+                // Batch 9 administration: credential renewal for mounted reads (Electron main only).
+                posts.put("/local/v1/vfs/credential-requests", this::vfsCredentialRequests);
+                posts.put("/local/v1/vfs/mount/credential", this::vfsInstallCredential);
+                posts.put("/local/v1/vfs/mount/credential-failed", this::vfsCredentialFailed);
                 server = LocalApiServer.start(bootstrap.secret(),
                         Map.of("/local/v1/health", () -> new LocalApiServer.Response.Json(200, health()),
                                 "/local/v1/status", () -> new LocalApiServer.Response.Json(200, status()),
@@ -170,7 +181,12 @@ public final class Agent {
                         // Batch 8 VFS routes: mount capability only, read-only metadata.
                         Map.of("/local/v1/vfs/session", this::vfsSession,
                                 "/local/v1/vfs/accounts", this::vfsAccounts,
-                                "/local/v1/vfs/list", this::vfsList),
+                                "/local/v1/vfs/list", this::vfsList,
+                                // Batch 9: content through opaque, agent-owned read handles.
+                                "/local/v1/vfs/open", this::vfsOpen,
+                                "/local/v1/vfs/read", this::vfsRead,
+                                "/local/v1/vfs/close", this::vfsClose,
+                                "/local/v1/vfs/cancel", this::vfsCancel),
                         mounts::authenticate,
                         log);
             } catch (IOException e) {
@@ -194,6 +210,8 @@ public final class Agent {
             awaitShutdown();
             log.info("Agent shutting down (" + shutdownReason + ")");
             mounts.revoke(); // the VFS capability dies with the agent
+            broker.reset(-1);
+            vfsReads.shutdown();
             int cleared = credentials.clear(null); // also cancels in-flight reads
             if (cache != null) {
                 cache.shutdown(); // drops the in-memory key; encrypted files stay for the next session
@@ -314,7 +332,8 @@ public final class Agent {
         capabilities.put("providerReads", true);
         capabilities.put("rangeReads", true);
         capabilities.put("chunkCache", true);
-        capabilities.put("virtualDrive", true); // Batch 8: metadata-only mount support
+        capabilities.put("virtualDrive", true); // Batch 8: mount support
+        capabilities.put("virtualDriveContent", true); // Batch 9: read-only content through the mount
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("protocolVersion", Bootstrap.PROTOCOL_VERSION);
         body.put("agentVersion", version);
@@ -373,6 +392,14 @@ public final class Agent {
             }
         }
         int cleared = credentials.clear(accountId);
+        if (accountId != null) {
+            // Disconnect: that account's mounted read handles end too (the drive is also unmounted).
+            int dropped = vfsReads.dropAccount(accountId);
+            broker.forget(accountId);
+            if (dropped > 0) {
+                log.info("Closed " + dropped + " mounted read handle(s) for account " + accountId);
+            }
+        }
         log.info("Cleared " + cleared + " delegated credential(s)" + (accountId == null ? "" : " for account " + accountId));
         return new LocalApiServer.Response.Json(200, Map.of("cleared", cleared));
     }
@@ -525,6 +552,9 @@ public final class Agent {
             Instant expires = Instant.parse(body.path("grantExpiresAt").asString(""));
             MountRegistry.Created created = mounts.create(userId, body.path("backendOrigin").asString(null),
                     body.path("grant").asString(null), expires);
+            // A new mount ends every context and renewal of the previous one.
+            vfsReads.dropAll();
+            broker.reset(created.generation());
             log.info("Virtual drive mount capability issued (generation " + created.generation() + ")");
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("generation", created.generation());
@@ -559,6 +589,11 @@ public final class Agent {
             return badRequest("invalid_request");
         }
         boolean revoked = mounts.revoke();
+        int dropped = vfsReads.dropAll(); // cancels in-flight mounted reads
+        broker.reset(-1);
+        if (dropped > 0) {
+            log.info("Closed " + dropped + " mounted read handle(s)");
+        }
         if (revoked) {
             log.info("Virtual drive mount capability revoked");
         }
@@ -570,6 +605,7 @@ public final class Agent {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("active", mount != null);
         out.put("generation", mount == null ? null : mount.generation());
+        out.put("reads", vfsReads.stats());
         return out;
     }
 
@@ -606,6 +642,136 @@ public final class Agent {
             return new LocalApiServer.Response.Json(200, vfs.list(mount, accountId, directory));
         } catch (MetadataSource.MetadataException e) {
             return new LocalApiServer.Response.Json(e.status(), LocalApiServer.error(e.code()));
+        } catch (IllegalArgumentException e) {
+            return badRequest("invalid_request");
+        }
+    }
+
+    // --- Batch 9: mounted content reads (capability routes) --------------------------------------
+
+    private static LocalApiServer.Response readError(ReadException e) {
+        Map<String, Object> out = new LinkedHashMap<>(LocalApiServer.error(e.code()));
+        if (e.retryAfter() != null) {
+            out.put("retryAfterSeconds", e.retryAfter().toSeconds());
+        }
+        return new LocalApiServer.Response.Json(e.httpStatus(), out);
+    }
+
+    private LocalApiServer.Response vfsOpen(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of("accountId", "fileId", "expectedSize")) || !body.path("fileId").isString()
+                || !body.path("expectedSize").isIntegralNumber() || !body.path("expectedSize").canConvertToLong()) {
+            return badRequest("invalid_request");
+        }
+        try {
+            VfsReadService.Opened opened = vfsReads.open(mount, UUID.fromString(body.path("accountId").asString("")),
+                    body.path("fileId").asString(), body.path("expectedSize").asLong());
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("handle", opened.handle());
+            out.put("sizeBytes", opened.sizeBytes());
+            out.put("consistency", opened.consistency());
+            out.put("revisionPinned", opened.revisionPinned());
+            return new LocalApiServer.Response.Json(201, out);
+        } catch (ReadException e) {
+            log.info("Mounted open failed: " + e.code());
+            return readError(e);
+        } catch (IllegalArgumentException e) {
+            return badRequest("invalid_request");
+        }
+    }
+
+    private LocalApiServer.Response vfsRead(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of("handle", "offset", "length")) || !body.path("handle").isString()
+                || !body.path("offset").isIntegralNumber() || !body.path("offset").canConvertToLong()
+                || !body.path("length").isIntegralNumber() || !body.path("length").canConvertToLong()) {
+            return badRequest("invalid_request");
+        }
+        try {
+            ReadService.ReadResult result = vfsReads.read(mount, body.path("handle").asString(),
+                    body.path("offset").asLong(), body.path("length").asLong());
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("X-HyperDrive-Read-Offset", Long.toString(result.offset()));
+            headers.put("X-HyperDrive-Read-Length", Integer.toString(result.length()));
+            headers.put("X-HyperDrive-EOF", Boolean.toString(result.eof()));
+            headers.put("X-HyperDrive-Cache", result.cache().name().toLowerCase(java.util.Locale.ROOT));
+            return new LocalApiServer.Response.Binary(200, result.data(), result.length(), headers);
+        } catch (ReadException e) {
+            log.info("Mounted read failed: " + e.code());
+            return readError(e);
+        }
+    }
+
+    private LocalApiServer.Response vfsClose(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of("handle")) || !body.path("handle").isString()) {
+            return badRequest("invalid_request");
+        }
+        return new LocalApiServer.Response.Json(200, Map.of("closed", vfsReads.close(mount, body.path("handle").asString())));
+    }
+
+    private LocalApiServer.Response vfsCancel(MountRegistry.Mount mount, JsonNode body) {
+        if (!onlyFields(body, Set.of())) {
+            return badRequest("invalid_request");
+        }
+        int cancelled = vfsReads.cancelInFlight(mount);
+        if (cancelled > 0) {
+            log.info("Cancelled " + cancelled + " in-flight mounted read(s) (unmounting)");
+        }
+        return new LocalApiServer.Response.Json(200, Map.of("cancelled", cancelled));
+    }
+
+    // --- Batch 9: credential renewal for mounted reads (administration, launch secret) -----------
+
+    private LocalApiServer.Response vfsCredentialRequests(JsonNode body) {
+        if (!onlyFields(body, Set.of("generation")) || !body.path("generation").isIntegralNumber()) {
+            return badRequest("invalid_request");
+        }
+        try {
+            java.util.List<UUID> due = broker.poll(body.get("generation").asLong(), CredentialBroker.MAX_POLL);
+            return new LocalApiServer.Response.Json(200,
+                    Map.of("requests", due.stream().map(id -> Map.of("accountId", id.toString())).toList()));
+        } catch (ReadException e) {
+            return readError(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new LocalApiServer.Response.Json(503, LocalApiServer.error("unavailable"));
+        }
+    }
+
+    private LocalApiServer.Response vfsInstallCredential(JsonNode body) {
+        if (!onlyFields(body, Set.of("generation", "provider", "accountId", "accessToken", "providerExpiresAt",
+                "rootNamespaceId")) || !body.path("generation").isIntegralNumber()) {
+            return badRequest("invalid_request");
+        }
+        try {
+            CredentialRegistry.Provider provider = CredentialRegistry.Provider.valueOf(body.path("provider").asString(""));
+            UUID accountId = UUID.fromString(body.path("accountId").asString(""));
+            JsonNode ns = body.get("rootNamespaceId");
+            CredentialRegistry.Installed installed = broker.install(body.get("generation").asLong(), provider, accountId,
+                    body.path("accessToken").asString(null), Instant.parse(body.path("providerExpiresAt").asString("")),
+                    ns == null || ns.isNull() ? null : ns.asString(null));
+            log.info("Installed a renewed " + provider + " credential for mounted reads of account " + accountId);
+            // The credential handle stays inside the agent; Electron only learns that it worked.
+            return new LocalApiServer.Response.Json(201,
+                    Map.of("installed", true, "retentionExpiresAt", installed.retentionExpiresAt().toString()));
+        } catch (ReadException e) {
+            return readError(e);
+        } catch (IllegalArgumentException | DateTimeParseException e) {
+            return badRequest("invalid_request");
+        }
+    }
+
+    private LocalApiServer.Response vfsCredentialFailed(JsonNode body) {
+        if (!onlyFields(body, Set.of("generation", "accountId", "code")) || !body.path("generation").isIntegralNumber()
+                || !body.path("code").isString()) {
+            return badRequest("invalid_request");
+        }
+        try {
+            UUID accountId = UUID.fromString(body.path("accountId").asString(""));
+            String code = body.path("code").asString();
+            broker.fail(body.get("generation").asLong(), accountId, code);
+            log.info("Credential renewal for account " + accountId + " failed: " + code);
+            return new LocalApiServer.Response.Json(200, Map.of("recorded", true));
+        } catch (ReadException e) {
+            return readError(e);
         } catch (IllegalArgumentException e) {
             return badRequest("invalid_request");
         }

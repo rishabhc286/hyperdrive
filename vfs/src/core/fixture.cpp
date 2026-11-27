@@ -70,6 +70,14 @@ class FixtureTransport final : public AgentTransport {
         }
         return r;
     }
+
+    BinaryResult PostForBinary(const std::wstring&, const std::string&, void*, std::size_t, int) override {
+        BinaryResult r;  // fixture data has no content: reads are never fabricated
+        r.kind = HttpResult::Kind::Ok;
+        r.status = 415;
+        r.errorBody = R"({"code":"unsupported_file"})";
+        return r;
+    }
 };
 
 }  // namespace

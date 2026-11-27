@@ -342,6 +342,18 @@ How the agent reads ranges is described in
   nothing will be cached.
 - See [cache.md](cache.md) for chunking, encryption and cleanup.
 
+### Reads through the mounted drive (Batch 9)
+
+- Opening a file on the drive asks the backend for its current `rev`; the agent's read handle is
+  **pinned to that revision** for its lifetime and every read uses `path: "rev:<rev>"` with the
+  `Dropbox-API-Result` check. Files without a known `rev` can't be opened on the drive.
+- If that revision disappears (e.g. the file is overwritten and the old revision is no longer
+  served), reads fail with `STATUS_FILE_INVALID`; the handle never switches to the newer content.
+  Close and reopen the file to read the new revision.
+- Eligible chunks come from the encrypted cache (unchanged rules). Not verified live (no Dropbox
+  app); in particular whether Dropbox sends `Dropbox-API-Result` on 206 responses decides whether
+  any Dropbox chunk is cached at all. See [virtual-drive.md](virtual-drive.md).
+
 ### Manual verification: content reads (requires a Dropbox app)
 
 Not executed yet.

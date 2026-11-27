@@ -258,8 +258,40 @@ Details: [virtual-drive.md](virtual-drive.md) and
 - **Explorer:** "Open in Explorer" opens only the confirmed mount root computed in the main
   process; the renderer supplies no path.
 - **Limits:** metadata in Explorer can be ~30 s stale; mounted metadata doesn't prove current
-  permission at the provider beyond the backend's listing at fetch time. Crash cleanup is designed
-  (stdin EOF → unmount; WinFsp removes a dead process's volume) but not tested with real crashes.
+  permission at the provider beyond the backend's listing at fetch time.
+
+## Mounted content reads (Batch 9)
+
+Details: [virtual-drive.md](virtual-drive.md) and [ADR 0005](adr/0005-mounted-content-reads.md).
+
+- **Data path:** provider → agent → VFS → Windows. File bytes never reach the backend, Electron
+  IPC or React, and are never base64 in JSON. No plaintext temporary files: the only content
+  persisted is the Batch 7 encrypted cache, with unchanged eligibility.
+- **Read handles:** `hdf_`, 256-bit random, returned once to the VFS, stored by the agent only as
+  SHA-256 in memory, never logged. A handle is bound to the mount generation, account, provider,
+  file id, size and (Dropbox) revision taken **from the backend**, never from the VFS. Every read
+  also needs the current mount capability and an unexpired backend grant, so a handle is never
+  more useful than its mount session. Max 256 per mount. Unknown/stale handles: `410`.
+- **Ownership:** OpenRead calls the grant-scoped, owner-checked
+  `GET /api/v1/vfs/accounts/{id}/files/{fileId}`; another user's account or file answers 404.
+  The response carries no name, hash, path or token.
+- **What the VFS still never holds:** provider or HyperDrive tokens, the grant, cache keys,
+  credential handles (`hdh_`), the launch secret, URLs or paths. It sends only account id, provider
+  file id, expected size, handle, offset and length. Tested in native and real-mount checks.
+- **Credential renewal:** the agent can only *ask*; Electron main decides, using its own signed-in
+  session and the existing delegation route (ownership, status and content-scope checks
+  unchanged). Installs are bound to the mount generation and refused for older ones; requests can't
+  be answered for accounts the agent didn't ask about. Stopping the pump (unmount, logout,
+  disconnect, quit, agent restart) drops credentials obtained afterwards. The agent never holds a
+  refresh token; permission errors never trigger renewal; repeated rejections back off.
+- **Replaced credentials:** a new delegation for an account no longer cancels reads already using
+  the previous token (Batch 9 change); clearing the account (disconnect, logout) still cancels all
+  of them.
+- **Bounded failure:** 45 s per agent read (including ≤ 20 s renewal wait), 4 VFS content requests
+  at once, all-or-nothing reads, sticky permanent failures, unmount cancels in-flight reads.
+  Tested: unmount with a read outstanding, killing the VFS, killing the agent.
+- **Provider tokens after Disconnect:** deleted locally, **not** revoked at the provider; usable
+  there until they expire.
 
 ## Desktop
 
@@ -295,7 +327,12 @@ Details: [virtual-drive.md](virtual-drive.md) and
   Windows user can copy a delegated token from process memory and use it account-wide until it
   expires at the provider.
 - **Provider reads not verified live:** they are tested only against local mock provider
-  servers. Real Google and Dropbox range behavior, error bodies and redirects are unverified.
+  servers and (Batch 9) a deterministic fixture provider on a real WinFsp mount. Real Google and
+  Dropbox range behavior, error bodies and redirects are unverified.
+- **Google content consistency:** mounted Google reads detect size changes but not same-size
+  modifications between ranges; a long-open file could mix versions.
+- **Opening a file can cause downloads:** other software (for example real-time antivirus) may read
+  a file when it is opened; those reads reach the provider like any other.
 
 - **Agent orphans:** an agent that hangs without reading stdin, after Electron has died, isn't
   cleaned up automatically. There's no Windows Job Object yet; the data-directory lock then makes

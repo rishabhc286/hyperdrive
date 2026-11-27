@@ -29,7 +29,7 @@ export type LaunchConfig =
     }
   | { readonly error: AgentErrorCode };
 
-export type AgentPath = '/local/v1/health' | '/local/v1/status' | '/local/v1/cache/status';
+export type AgentPath = '/local/v1/health' | '/local/v1/status' | '/local/v1/cache/status' | '/local/v1/vfs/status';
 /** The only POST endpoints the desktop may call on the agent (Batch 6). */
 export type AgentPostPath =
   | '/local/v1/credentials'
@@ -43,7 +43,11 @@ export type AgentPostPath =
   // Batch 8: virtual-drive mount capability (administration; launch secret)
   | '/local/v1/vfs/mount'
   | '/local/v1/vfs/mount/grant'
-  | '/local/v1/vfs/mount/revoke';
+  | '/local/v1/vfs/mount/revoke'
+  // Batch 9: credential renewal for mounted reads (administration; launch secret)
+  | '/local/v1/vfs/credential-requests'
+  | '/local/v1/vfs/mount/credential'
+  | '/local/v1/vfs/mount/credential-failed';
 
 export interface AgentPostResponse {
   readonly status: number;
@@ -196,7 +200,7 @@ export class AgentManager {
   }
 
   /** Authenticated GET of a fixed agent path (main-process only). Throws AgentUnavailableError unless ready. */
-  async get(path: '/local/v1/cache/status', timeoutMs = 10_000): Promise<{ status: number; body: unknown; instanceId: string }> {
+  async get(path: '/local/v1/cache/status' | '/local/v1/vfs/status', timeoutMs = 10_000): Promise<{ status: number; body: unknown; instanceId: string }> {
     const launch = this.current;
     if (this.state !== 'ready' || !launch?.port || !launch.instanceId) throw new AgentUnavailableError();
     const response = await this.deps.httpGet(launch.port, path, launch.secret, timeoutMs);

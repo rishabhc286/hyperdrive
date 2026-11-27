@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// hyperdrive-vfs: HyperDrive's read-only, metadata-only virtual drive (Batch 8).
+// hyperdrive-vfs: HyperDrive's read-only virtual drive (Batch 8 metadata, Batch 9 file content).
 //
 // Normal mode (started by the desktop's VfsManager):
 //   * no command-line arguments; one bounded JSON bootstrap line on stdin (agent port, mount
@@ -21,6 +21,7 @@
 
 #include "core/agent_client.hpp"
 #include "core/bootstrap.hpp"
+#include "core/content.hpp"
 #include "core/fixture.hpp"
 #include "core/tree.hpp"
 #include "fs/filesystem.hpp"
@@ -91,7 +92,8 @@ int Run(hd::AgentTransport& transport, wchar_t letter, bool fixture, HANDLE stdi
     }
     std::int64_t created = NowFiletime();
     hd::MetadataTree tree(client, created);
-    hd::HyperDriveFs fs(tree, fixture ? L"HyperDrive FIXTURE" : L"HyperDrive");
+    hd::ContentService content(client);
+    hd::HyperDriveFs fs(tree, content, fixture ? L"HyperDrive FIXTURE" : L"HyperDrive");
     if (!NT_SUCCESS(fs.Create(created))) {
         EmitFailed("volume-create-failed");
         return 5;
@@ -167,6 +169,9 @@ int Run(hd::AgentTransport& transport, wchar_t letter, bool fixture, HANDLE stdi
         std::unique_lock<std::mutex> lock(g_stopMutex);
         g_stopCv.wait(lock, [] { return g_stop.load(); });
     }
+    // Outstanding reads first: new ones fail at once, in-flight ones are cancelled in the agent, so
+    // stopping the dispatcher (which waits for running callbacks) completes in bounded time.
+    content.BeginUnmount();
     fs.Stop();
     if (heartbeat.joinable()) heartbeat.join();
     std::string reason;

@@ -99,7 +99,8 @@ export const VFS_READY: VirtualDriveStatus = {
   driveLetter: 'H',
   phase: null,
   error: null,
-  prerequisite: null
+  prerequisite: null,
+  activity: null
 };
 
 /** Fake virtual-drive bridge; `emit` simulates a main-process status push. */
@@ -108,8 +109,17 @@ export function createMockVfs(initial: VirtualDriveStatus = VFS_READY) {
   let current = initial;
   const api = {
     getStatus: vi.fn<VirtualDriveApi['getStatus']>(() => Promise.resolve(current)),
-    mount: vi.fn<VirtualDriveApi['mount']>(() => Promise.resolve((current = { ...current, state: 'mounted', phase: 'mounted' }))),
-    unmount: vi.fn<VirtualDriveApi['unmount']>(() => Promise.resolve((current = { ...current, state: 'ready', phase: null }))),
+    mount: vi.fn<VirtualDriveApi['mount']>(() =>
+      Promise.resolve(
+        (current = {
+          ...current,
+          state: 'mounted',
+          phase: 'mounted',
+          activity: { openFiles: 0, reads: 0, bytesReturned: 0, providerBytes: 0, cacheBytes: 0, lastIssue: null }
+        })
+      )
+    ),
+    unmount: vi.fn<VirtualDriveApi['unmount']>(() => Promise.resolve((current = { ...current, state: 'ready', phase: null, activity: null }))),
     openInExplorer: vi.fn<VirtualDriveApi['openInExplorer']>(() => Promise.resolve({ ok: true, value: null })),
     setDriveLetter: vi.fn<VirtualDriveApi['setDriveLetter']>((input) =>
       Promise.resolve({ ok: true, value: (current = { ...current, driveLetter: input.letter }) })
@@ -172,7 +182,7 @@ export const AGENT_READY: AgentStatus = {
   state: 'ready',
   agentVersion: '0.1.0-SNAPSHOT',
   uptimeMillis: 125_000,
-  capabilities: { providerReads: true, rangeReads: true, chunkCache: true, virtualDrive: false },
+  capabilities: { providerReads: true, rangeReads: true, chunkCache: true, virtualDrive: false, virtualDriveContent: false },
   error: null,
   autoRestartsRemaining: 2
 };

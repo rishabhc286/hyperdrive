@@ -71,6 +71,38 @@ class MetadataGrantTest extends StorageIntegrationTest {
     }
 
     @Test
+    void aGrantReadsOneOwnedFilesMetadataByProviderIdForMountedReads() throws Exception {
+        String alice = onboardedUser("login-vfs-6", "frankvfs");
+        UUID box = storage.connectDropbox(alice, dropbox, BOX);
+        String id = (String) dropbox.file("3235641", "", "Movie.mp4", 5_000_000_123L).get("id");
+        String bob = onboardedUser("login-vfs-7", "gracevfs");
+        UUID bobsBox = storage.connectDropbox(bob, dropbox, BOX);
+        String grant = issue(alice);
+
+        MvcResult r = call("GET", "/api/v1/vfs/accounts/" + box + "/files/" + id, grant);
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(r.getResponse().getHeader("Cache-Control")).contains("no-store");
+        JsonNode file = json(r);
+        assertThat(file.get("id").asString()).isEqualTo(id);
+        assertThat(file.get("provider").asString()).isEqualTo("DROPBOX");
+        assertThat(file.get("kind").asString()).isEqualTo("FILE");
+        assertThat(file.get("sizeBytes").asLong()).isEqualTo(5_000_000_123L); // > 4 GiB survives as a 64-bit value
+        assertThat(file.get("providerRevision").asString()).isEqualTo("a1c10ce0dd78");
+        assertThat(file.get("canDownload").asBoolean()).isTrue();
+        assertThat(r.getResponse().getContentAsString()).doesNotContain("Movie", "contentHash", "path", "sl.fake");
+
+        // Foreign or unknown accounts look the same; a session token can't use the grant route.
+        assertThat(call("GET", "/api/v1/vfs/accounts/" + bobsBox + "/files/" + id, grant).getResponse().getStatus())
+                .isEqualTo(404);
+        assertThat(call("GET", "/api/v1/vfs/accounts/" + UUID.randomUUID() + "/files/" + id, grant).getResponse()
+                .getStatus()).isEqualTo(404);
+        assertThat(call("GET", "/api/v1/vfs/accounts/" + box + "/files/" + id, alice).getResponse().getStatus())
+                .isEqualTo(403);
+        assertThat(call("GET", "/api/v1/vfs/accounts/" + box + "/files/not-a-dropbox-id", grant).getResponse()
+                .getStatus()).isEqualTo(400);
+    }
+
+    @Test
     void aGrantAuthorizesNothingElseAndASessionTokenCannotUseTheVfsApi() throws Exception {
         String token = onboardedUser("login-vfs-3", "carolvfs");
         UUID box = storage.connectDropbox(token, dropbox, BOX);

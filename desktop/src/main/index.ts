@@ -48,6 +48,7 @@ import { VirtualDriveIpcChannel } from '../shared/vfs';
 import { resolveVfsConfig } from './vfs/vfs-config';
 import { VfsManager } from './vfs/vfs-manager';
 import { VirtualDriveCoordinator } from './vfs/virtual-drive';
+import { VfsCredentialPump } from './vfs/credential-pump';
 import { DriveSettings } from './vfs/drive-settings';
 import { AgentUnavailableError } from './agent/agent-manager';
 import { SessionExpiredError } from './auth/auth-manager';
@@ -375,8 +376,18 @@ function createVirtualDrive(
           spawn: (command, args) => spawn(command, [...args], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
         })
       : null;
+  // Batch 9: renews delegated provider credentials for mounted reads in the main process (no renderer).
+  const pump = new VfsCredentialPump({
+    post: (path, body, timeoutMs, signal) => agent.post(path, body, timeoutMs, signal),
+    issueCredential: async (accountId) => {
+      if (!api) throw new BackendUnreachableError(false);
+      return auth.withAccessToken((token) => api.issueReadCredential(token, accountId));
+    }
+  });
   return new VirtualDriveCoordinator({
     vfs,
+    pump,
+    readStatus: async () => (await agent.get('/local/v1/vfs/status', 2_000)).body,
     prerequisite: () => {
       if ('missing' in config) return config.missing;
       return agent.snapshot().state === 'ready' ? null : 'agent-unavailable';

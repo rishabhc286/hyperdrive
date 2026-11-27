@@ -23,7 +23,7 @@ starts and owns it, talks to it over an authenticated loopback API, and shows it
 | Data directory | `<Electron userData>/agent`, computed by Electron and passed in the bootstrap. The agent creates it and takes an exclusive OS lock on `agent.lock`. No cache, no log files, nothing else is written. |
 | Java discovery (development) | `HYPERDRIVE_AGENT_JAVA` (absolute path) → `JAVA_HOME\bin\java.exe` → `java` on `PATH`. Then a `java -version` preflight requires **≥ 21**. Nothing is downloaded or installed. |
 | Production packaging | **Not done.** A packaged app has no bundled agent or JRE and reports `not-packaged` (unless `HYPERDRIVE_AGENT_JAR` is set). Bundling a runtime is installer work; a permanent user-installed Java is **not** the intended end-user requirement. |
-| Native VFS (Batch 8) | The C++ WinFsp process calls three **capability-scoped** routes (below) over the same loopback server for metadata. Content reads through the drive need a separate decision (Batch 9). See [ADR 0004](adr/0004-vfs-transport-and-scoped-metadata-authorization.md). |
+| Native VFS (Batches 8/9) | The C++ WinFsp process calls **capability-scoped** routes (below) over the same loopback server: metadata (Batch 8) and file content through agent-owned read handles (Batch 9). See [ADR 0004](adr/0004-vfs-transport-and-scoped-metadata-authorization.md) and [ADR 0005](adr/0005-mounted-content-reads.md). |
 
 ## Build and run (Windows PowerShell)
 
@@ -264,10 +264,38 @@ Two separate credentials, neither accepted on the other's routes:
   `invalid_backend_response`.
 - Capability `virtualDrive` is `true` (metadata support).
 
+## Mounted content routes (Batch 9)
+
+| Route | Credential | Purpose |
+| --- | --- | --- |
+| `POST /local/v1/vfs/open` | mount capability | `{accountId, fileId, expectedSize}` → `201 {handle, sizeBytes, consistency, revisionPinned}`. Validates the file with the backend (by provider id); refuses non-files, unknown size, Dropbox without revision (`415 unsupported_file`) and a size different from `expectedSize` (`409 file_changed`); `503 too_many_open_files` beyond 256 |
+| `POST /local/v1/vfs/read` | mount capability | `{handle, offset, length ≤ 4 MiB}` → `200 application/octet-stream` with `Content-Length`, `X-HyperDrive-Read-Offset`, `-Read-Length`, `-EOF`, `-Cache`. Same contract as `/local/v1/reads` (EOF, clamping, `file_changed`) |
+| `POST /local/v1/vfs/close` | mount capability | `{handle}` → `{closed}`; cancels that handle's in-flight reads |
+| `POST /local/v1/vfs/cancel` | mount capability | `{}` → `{cancelled}`; cancels every in-flight read of the mount (unmounting) |
+| `POST /local/v1/vfs/credential-requests` | launch secret | `{generation}` → `{requests:[{accountId}]}`, long poll ≤ 25 s; `404` for an old generation |
+| `POST /local/v1/vfs/mount/credential` | launch secret | `{generation, provider, accountId, accessToken, providerExpiresAt, rootNamespaceId?}` → `201 {installed, retentionExpiresAt}`; `404` old generation, `409 no_pending_request` |
+| `POST /local/v1/vfs/mount/credential-failed` | launch secret | `{generation, accountId, code}` with code ∈ `needs_reconnect, content_permission_missing, account_not_found, session_expired, backend_unavailable, rate_limited, agent_rejected, cancelled` |
+
+- **Contexts:** `vfs/VfsReadService`. Handles are `hdf_` + 43 base64url characters, stored as
+  SHA-256; no idle expiry; ended by close, revoke, a new mount, `credentials/clear` for the account
+  (disconnect) and shutdown. Reads re-check the generation and the grant expiry
+  (`401 authorization_expired`), and are cancelled after **45 s** (`504 timeout`).
+- **Renewal:** `vfs/CredentialBroker` keeps one pending request per account and generation; readers
+  wait ≤ 20 s. Permanent failures stick until the next mount; transient ones back off 15 s; a
+  rejected token is renewed at most once per 60 s. Credentials are looked up per account in the
+  same `CredentialRegistry` as Batch 6 reads (≤ 20 min retention).
+- **Backend:** one more fixed route, `GET {origin}/api/v1/vfs/accounts/{id}/files/{fileId}`
+  (grant), strictly parsed; its `id` must equal the requested id.
+- **Concurrency:** the HTTP pool has 16 workers (8 reads, 4 per account, plus metadata, close,
+  cancel, the long poll and status). `GET /local/v1/vfs/status` adds `reads`: `openHandles, opens,
+  reads, bytesReturned, providerBytes, cacheBytes, failures{code→count}, lastError, renewals{...}`.
+- Capability `virtualDriveContent` is `true`.
+- **Test-only entry point:** `FixtureAgentMain` (agent **test** sources) runs this agent against a
+  deterministic fixture provider for `vfs/tests/content-mount-check.mjs`; it is not in the jar.
+
 ## Not implemented
 
 - Prefetching, full-file downloads and playback.
 - Writes and staging.
-- Content reads through the virtual drive.
 - A Windows service, auto-start at login, an installer, and a bundled JRE.
 - Background sync and metrics.

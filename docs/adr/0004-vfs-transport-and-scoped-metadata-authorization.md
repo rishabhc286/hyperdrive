@@ -68,4 +68,6 @@ must get metadata from an authenticated backend context rather than from the ren
 - Metadata can be up to ~30 s stale in Explorer; listings over the limits fail visibly.
 - Disconnecting any account unmounts the whole drive in this version.
 - Content reads need a new decision on transport and on authorization (whether the mount
-  capability may trigger reads), in Batch 9.
+  capability may trigger reads), in Batch 9. **Decided in [ADR 0005](0005-mounted-content-reads.md):**
+  the same loopback HTTP transport with binary bodies, and capability routes that read only through
+  agent-owned handles validated against the backend.

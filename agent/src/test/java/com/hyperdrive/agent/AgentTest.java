@@ -66,7 +66,9 @@ class AgentTest {
             assertThat(status.get("uptimeMillis").asLong()).isGreaterThanOrEqualTo(0);
             assertThat(status.get("instanceId").asString()).isEqualTo(h.handshake().get("instanceId").asString());
             JsonNode caps = status.get("capabilities");
-            assertThat(caps.propertyNames()).containsExactlyInAnyOrder("providerReads", "rangeReads", "chunkCache", "virtualDrive");
+            assertThat(caps.propertyNames()).containsExactlyInAnyOrder("providerReads", "rangeReads", "chunkCache", "virtualDrive",
+                    "virtualDriveContent");
+            assertThat(caps.get("virtualDriveContent").asBoolean()).isTrue();
             assertThat(caps.get("providerReads").asBoolean()).isTrue();
             assertThat(caps.get("rangeReads").asBoolean()).isTrue();
             assertThat(caps.get("chunkCache").asBoolean()).isTrue();

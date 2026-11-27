@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# HyperDrive virtual drive (Batch 8). Windows x64 only; requires the WinFsp developer SDK.
+# HyperDrive virtual drive (Batch 8 metadata, Batch 9 content). Windows x64 only; requires the WinFsp developer SDK.
 cmake_minimum_required(VERSION 3.24)
 project(hyperdrive_vfs LANGUAGES CXX)
 
@@ -40,6 +40,7 @@ add_library(hdvfs_core STATIC
   src/core/bootstrap.cpp
   src/core/status.cpp
   src/core/tree.cpp
+  src/core/content.cpp
   src/core/fixture.cpp)
 target_include_directories(hdvfs_core PUBLIC src)
 target_compile_options(hdvfs_core PRIVATE ${HD_WARNINGS})
@@ -60,7 +61,8 @@ add_executable(hdvfs_tests
   tests/test_snapshot.cpp
   tests/test_client.cpp
   tests/test_tree.cpp
-  tests/test_bootstrap.cpp)
+  tests/test_bootstrap.cpp
+  tests/test_content.cpp)
 target_compile_options(hdvfs_tests PRIVATE ${HD_WARNINGS})
 target_link_libraries(hdvfs_tests PRIVATE hdvfs_core)
 add_test(NAME hdvfs_tests COMMAND hdvfs_tests)

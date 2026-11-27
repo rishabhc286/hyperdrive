@@ -98,6 +98,28 @@ class BackendMetadataClientTest {
     }
 
     @Test
+    void fileMetadataByIdIsEncodedStrictlyParsedAndMustMatchTheRequestedId() throws Exception {
+        UUID account = UUID.randomUUID();
+        MountRegistry.Mount mount = mount();
+        body = "{\"id\":\"id:Ab-1\",\"provider\":\"DROPBOX\",\"kind\":\"FILE\",\"sizeBytes\":5368709897,"
+                + "\"modifiedAt\":null,\"providerRevision\":\"0123456789a\",\"canDownload\":true}";
+        MetadataSource.FileMeta f = client.file(mount, account, "id:Ab-1");
+        assertThat(f.sizeBytes()).isEqualTo(5_368_709_897L);
+        assertThat(f.providerRevision()).isEqualTo("0123456789a");
+        assertThat(requests.getFirst()).isEqualTo("GET /api/v1/vfs/accounts/" + account + "/files/id%3AAb-1 auth=Bearer " + GRANT);
+        // Another file's metadata, unknown provider or a negative size is never accepted.
+        body = "{\"id\":\"id:Other\",\"provider\":\"DROPBOX\",\"kind\":\"FILE\",\"sizeBytes\":5,\"canDownload\":true}";
+        assertThatThrownBy(() -> client.file(mount, account, "id:Ab-1")).hasMessage("invalid_backend_response");
+        body = "{\"id\":\"id:Ab-1\",\"provider\":\"ONEDRIVE\",\"kind\":\"FILE\",\"sizeBytes\":5,\"canDownload\":true}";
+        assertThatThrownBy(() -> client.file(mount, account, "id:Ab-1")).hasMessage("invalid_backend_response");
+        body = "{\"id\":\"id:Ab-1\",\"provider\":\"DROPBOX\",\"kind\":\"FILE\",\"sizeBytes\":-5,\"canDownload\":true}";
+        assertThatThrownBy(() -> client.file(mount, account, "id:Ab-1")).hasMessage("invalid_backend_response");
+        status = 404;
+        body = "{\"code\":\"file_not_found\"}";
+        assertThatThrownBy(() -> client.file(mount, account, "id:Ab-1")).hasMessage("not_found");
+    }
+
+    @Test
     void anExpiredGrantIsNotSent() throws Exception {
         MountRegistry r = new MountRegistry(Clock.offset(Clock.systemUTC(), Duration.ofMinutes(-30)));
         r.create(UUID.randomUUID(), "http://127.0.0.1:" + server.getAddress().getPort(), GRANT,

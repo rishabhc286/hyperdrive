@@ -1,5 +1,7 @@
 import type {
+  VirtualDriveActivity,
   VirtualDriveError,
+  VirtualDriveReadIssue,
   VirtualDrivePhase,
   VirtualDrivePrerequisite,
   VirtualDriveResult,
@@ -49,16 +51,21 @@ export interface VirtualDriveDeps {
   /** Grant renewal interval (the grant lives 15 min). */
   readonly renewEveryMs?: number;
   readonly classifyError?: (error: unknown) => VirtualDriveError;
+  /** Batch 9: credential renewal for mounted reads (main process only; see credential-pump.ts). */
+  readonly pump?: { start(generation: number): Promise<void>; stop(): void };
+  /** Batch 9: the agent's GET /local/v1/vfs/status body (counters only), or null when unavailable. */
+  readonly readStatus?: () => Promise<unknown>;
 }
 
 type Internal = 'idle' | 'mounting' | 'mounted' | 'unmounting' | 'failed';
 const DECODER = new TextDecoder();
 
 /**
- * Main-process owner of the virtual drive (Batch 8). Mount: metadata grant (backend, session) →
- * mount capability (agent, launch secret) → hyperdrive-vfs.exe (stdin bootstrap). Unmount, logout,
- * disconnect and app shutdown run the reverse: stop admitting mounts, unmount the owned process,
- * revoke the capability in the agent, revoke the grant at the backend.
+ * Main-process owner of the virtual drive (Batch 8, content reads Batch 9). Mount: metadata grant
+ * (backend, session) → mount capability (agent, launch secret) → hyperdrive-vfs.exe (stdin
+ * bootstrap) → credential renewal pump for that generation. Unmount, logout, disconnect and app
+ * shutdown run the reverse: stop the pump, stop admitting mounts, unmount the owned process, revoke
+ * the capability in the agent (which ends every read handle), revoke the grant at the backend.
  * Nothing secret is kept after it's handed on, and nothing secret reaches the renderer.
  */
 export class VirtualDriveCoordinator {
@@ -88,8 +95,11 @@ export class VirtualDriveCoordinator {
 
   async status(): Promise<VirtualDriveStatus> {
     const prerequisite = this.deps.prerequisite();
-    const base = { driveLetter: this.letter, phase: this.phase, prerequisite };
-    if (this.state === 'mounting' || this.state === 'mounted' || this.state === 'unmounting') {
+    const base = { driveLetter: this.letter, phase: this.phase, prerequisite, activity: null };
+    if (this.state === 'mounted') {
+      return { ...base, state: this.state, error: null, activity: await this.activity() };
+    }
+    if (this.state === 'mounting' || this.state === 'unmounting') {
       return { ...base, state: this.state, error: null };
     }
     if (prerequisite) return { ...base, state: 'prerequisite-missing', error: null, phase: null };
@@ -176,6 +186,8 @@ export class VirtualDriveCoordinator {
       this.state = 'mounted';
       this.phase = 'mounted';
       this.startRenewal();
+      // Credentials for reads are obtained on demand by the agent's request, outside any React screen.
+      void this.deps.pump?.start(body['generation']).catch(() => undefined);
       this.emit();
       return this.status();
     } catch (error) {
@@ -199,6 +211,7 @@ export class VirtualDriveCoordinator {
 
   /** Reverse order of mount; every step best effort, all of them always attempted. */
   private async cleanup(): Promise<void> {
+    this.deps.pump?.stop(); // first: nothing obtained from now on reaches the agent
     this.stopRenewal();
     await this.deps.vfs?.unmount().catch(() => undefined);
     if (this.generation !== null) {
@@ -249,6 +262,17 @@ export class VirtualDriveCoordinator {
     }
   }
 
+  /** Counters from the agent (bounded wait); never names, ids or bytes. */
+  private async activity(): Promise<VirtualDriveActivity | null> {
+    if (!this.deps.readStatus) return null;
+    try {
+      const status = await this.deps.readStatus();
+      return parseActivity(status);
+    } catch {
+      return null;
+    }
+  }
+
   private fail(error: VirtualDriveError): Promise<VirtualDriveStatus> {
     this.state = 'failed';
     this.error = error;
@@ -262,6 +286,67 @@ export class VirtualDriveCoordinator {
       for (const listener of this.listeners) listener(s);
     });
   }
+}
+
+const count = (v: unknown): number => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : 0);
+
+/** Agent codes → user-level issue. Cancellations and stale handles (teardown) aren't shown. */
+export function readIssueFor(code: unknown): VirtualDriveReadIssue | null {
+  switch (code) {
+    case 'needs_reconnect':
+    case 'account_not_found':
+      return 'reconnect-needed';
+    case 'content_permission_missing':
+    case 'permission_missing':
+    case 'credential_rejected':
+    case 'forbidden':
+      return 'content-permission-missing';
+    case 'authorization_expired':
+    case 'session_expired':
+      return 'session-expired';
+    case 'unavailable':
+    case 'backend_unavailable':
+    case 'invalid_provider_response':
+    case 'truncated_response':
+    case 'provider_error':
+    case 'range_not_supported':
+      return 'network';
+    case 'timeout':
+      return 'timeout';
+    case 'rate_limited':
+    case 'too_busy':
+      return 'rate-limited';
+    case 'file_changed':
+      return 'file-changed';
+    case 'unsupported_file':
+      return 'unsupported-file';
+    case 'not_found':
+      return 'not-found';
+    case 'cancelled':
+    case 'stale_handle':
+    case null:
+    case undefined:
+      return null;
+    default:
+      return 'other';
+  }
+}
+
+export function parseActivity(status: unknown): VirtualDriveActivity | null {
+  if (typeof status !== 'object' || status === null) return null;
+  const reads = (status as { reads?: unknown }).reads;
+  if (typeof reads !== 'object' || reads === null) return null;
+  const r = reads as Record<string, unknown>;
+  const renewals = (typeof r['renewals'] === 'object' && r['renewals'] !== null ? r['renewals'] : {}) as Record<string, unknown>;
+  return {
+    openFiles: count(r['openHandles']),
+    reads: count(r['reads']),
+    bytesReturned: count(r['bytesReturned']),
+    providerBytes: count(r['providerBytes']),
+    cacheBytes: count(r['cacheBytes']),
+    // A renewal refusal (reconnect needed, no permission) is the most actionable thing to show.
+    lastIssue: readIssueFor(renewals['lastFailure']) ?? readIssueFor(r['lastError'])
+  };
 }
 
 function parse(bytes: Uint8Array): Record<string, unknown> {

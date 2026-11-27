@@ -1,5 +1,83 @@
 # Progress
 
+## Batch 9: read-only file content through the mounted drive (2026-11-27)
+
+### Foundation check before starting
+
+- Repository at `416d454` (Batch 8), clean. Baseline re-run: backend 227, agent 91, desktop 284,
+  native 28 tests passed; real-mount checks `fixture-mount-check.mjs` 24/24 and
+  `agent-mount-check.mjs` 13/13 passed on this machine. Batch 8 was complete; nothing blocked.
+- WinFsp semantics taken from the installed `winfsp.h`/`fsctl.h`, the memfs sample and the
+  official `doc/` sources in the WinFsp GitHub repository (winfsp.dev itself failed TLS
+  verification from this machine).
+
+### Completed
+
+- **Design:** [ADR 0005](adr/0005-mounted-content-reads.md) (agent-owned read handles, version
+  semantics, renewal, VFS read algorithm, error mapping); [virtual-drive.md](virtual-drive.md)
+  rewritten.
+- **Backend:** grant-scoped `GET /api/v1/vfs/accounts/{id}/files/{fileId}` (owner-checked; id,
+  provider, kind, size, modified, revision, canDownload; no name/hash/path).
+- **Agent:** `vfs/VfsReadService` (OpenRead/Read/Close/Cancel contexts, `hdf_` handles hashed in
+  memory, 256 per mount, generation + grant checks on every read, 45 s deadline, counters),
+  `vfs/CredentialBroker` (one renewal per account and generation, bounded waits, sticky/backoff
+  failures), capability routes `/local/v1/vfs/open|read|close|cancel`, admin routes
+  `/local/v1/vfs/credential-requests`, `/mount/credential`, `/mount/credential-failed`.
+  `ReadService` accepts an external cancel token; `CredentialRegistry` adds per-account lookup and
+  retirement; HTTP pool 12 → 16. Capability `virtualDriveContent`.
+- **VFS:** `core/content.*` (lazy open on first Read, close in `Close`, EOF/clamp, ≤ 4 MiB split
+  straight into the WinFsp buffer, all-or-nothing, sticky permanent failures + 10 s per-file
+  negative cache, 4 concurrent requests, unmount cancels), binary `PostForBinary` transport with
+  strict header/length validation, content fault → NTSTATUS mapping, unmount ordering in `main.cpp`.
+- **Desktop:** `VfsCredentialPump` (main process; long poll → session delegation → install for the
+  same generation; stopped first on every teardown), coordinator wiring, Virtual drive card
+  ("read-only virtual drive", real agent counters, safe read-issue messages), agent card copy.
+- **Test-only E2E:** `FixtureAgentMain` (agent test sources), `vfs/tests/content-mount-check.mjs`,
+  `vfs/tests/unbuffered-read.ps1`.
+
+### Fixes found on the way
+
+- **Replacing a credential cancelled reads using the old one** (Batch 6 behavior): a Verify read
+  in the app would have cancelled in-flight drive reads of the same account. Replacement now lets
+  those reads finish; clearing still cancels them.
+- **Oversized mounted reads waited for a credential** before being rejected; validation now comes
+  first (found by `VfsContentApiTest`).
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| Backend `mvnw verify` | **228 passed** (+1: file-by-id grant route) |
+| Agent `mvnw verify` | **111 passed** (+ `VfsReadServiceTest` 15, `VfsContentApiTest` 4, `BackendMetadataClientTest` +1; capability test updated) |
+| Desktop typecheck, lint, build | Pass |
+| Desktop Vitest | **296 passed** (23 files; + credential pump 7, coordinator 4, card 1) |
+| Native build (`/W4 /WX`) and `hdvfs_tests` | **Pass; 43 tests** (+15 content) |
+| Real WinFsp mount, content through real agent + fixture provider (`content-mount-check.mjs`) | **Passed on this machine: 44/44** (see below) |
+| `fixture-mount-check.mjs`, `agent-mount-check.mjs` (regression) | **24/24, 13/13** |
+| Live Google Drive / Dropbox reads through the drive | **Not executed:** no OAuth client / Dropbox app |
+| PDF viewer, video player, Office, Explorer double-click | **Not executed** (no live account; no app tested) |
+
+Fixture evidence (`content-mount-check.mjs`, TEST-ONLY provider, not live): listing of two
+accounts; 5 GiB size exact; full read and `CopyFile` of a 1,000,003-byte file match SHA-256;
+cross-chunk, 25 random, final partial and EOF reads exact; reads across 2³², beyond 4 GiB and the
+last bytes of a 5 GiB file exact; 6 concurrent readers exact; a 12 MiB non-cached read reached the
+agent as 4 MiB pieces and matched; non-cached EOF reads return only real bytes / `ERROR_HANDLE_EOF`;
+Dropbox re-read served by the agent cache with 0 provider bytes, Google re-read went to the
+provider; one credential renewal per account; create/write/delete/rename/mkdir rejected; unmount
+with an outstanding read finished in < 1 s and the read failed (`ECANCELED`); a remount (new
+generation) reads again; killing the VFS removed the drive; killing the agent failed the
+outstanding read at once and the VFS unmounted itself (`agent-unreachable`, ~37 s); no
+capability, token, grant or handle in any output. Observed: copies keep `ReadOnly`; ~128 KiB of
+extra agent reads per non-cached open, consistent with antivirus scanning on open.
+
+### Remaining limitations
+
+- Google: same-size modifications during an open read aren't detected.
+- Blocking callbacks (≤ 45 s per agent read); per-read application cancellation isn't propagated.
+- No application compatibility verified beyond Windows file APIs; files are shown offline.
+- Disconnect unmounts the whole drive; delegated tokens are deleted locally, not revoked.
+- Live provider behavior (Range/`Content-Range`, `Dropbox-API-Result` on 206) still unverified.
+
 ## Batch 8: read-only, metadata-only WinFsp virtual drive (2026-11-23)
 
 ### Foundation check before starting

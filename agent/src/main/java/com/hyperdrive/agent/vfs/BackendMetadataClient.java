@@ -21,8 +21,9 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Calls only two fixed backend routes with the mount's metadata grant:
- * {@code GET /api/v1/vfs/accounts} and {@code GET /api/v1/vfs/accounts/{id}/files}. The origin was
+ * Calls only three fixed backend routes with the mount's metadata grant:
+ * {@code GET /api/v1/vfs/accounts}, {@code GET /api/v1/vfs/accounts/{id}/files} and (Batch 9)
+ * {@code GET /api/v1/vfs/accounts/{id}/files/{fileId}}. The origin was
  * validated when the mount was created; redirects are refused; bodies are size-bounded and
  * strictly parsed. There is no generic forwarding.
  */
@@ -109,6 +110,25 @@ public final class BackendMetadataClient implements MetadataSource {
         }
         String next = text(body, "continuation", 8192);
         return new Page(entries, next);
+    }
+
+    @Override
+    public FileMeta file(MountRegistry.Mount mount, UUID accountId, String fileId) throws MetadataException {
+        JsonNode body = get(mount, "/api/v1/vfs/accounts/" + accountId + "/files/"
+                + URLEncoder.encode(fileId, StandardCharsets.UTF_8).replace("+", "%20"));
+        String id = text(body, "id", 512);
+        String provider = text(body, "provider", 32);
+        String kind = text(body, "kind", 32);
+        JsonNode size = body.get("sizeBytes");
+        JsonNode download = body.get("canDownload");
+        if (id == null || !id.equals(fileId) || !("GOOGLE_DRIVE".equals(provider) || "DROPBOX".equals(provider))
+                || kind == null || !KINDS.contains(kind) || download == null || !download.isBoolean()
+                || (size != null && !size.isNull() && (!size.isIntegralNumber() || !size.canConvertToLong()
+                        || size.asLong() < 0))) {
+            throw invalid();
+        }
+        Long sizeBytes = size == null || size.isNull() ? null : size.asLong();
+        return new FileMeta(id, provider, kind, sizeBytes, text(body, "providerRevision", 256), download.asBoolean());
     }
 
     private JsonNode get(MountRegistry.Mount mount, String pathAndQuery) throws MetadataException {

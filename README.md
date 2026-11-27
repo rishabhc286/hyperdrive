@@ -5,14 +5,16 @@ HyperDrive is a Windows desktop application, in early development, that will bri
 Files will stream on demand in 4 MiB chunks and be cached on the local disk, so they don't need
 to be downloaded in full first.
 
-> **Status: read-only browsing, diagnostic reads and a metadata-only drive.** You can sign in with
-> Google (which creates a HyperDrive account), choose a username, then **separately** connect
-> Google Drive and Dropbox accounts and browse their folders and file metadata in one "All
-> storage" view. A local **agent** does bounded diagnostic reads ("Verify file read") with an
+> **Status: read-only browsing and a read-only virtual drive (development builds).** You can sign
+> in with Google (which creates a HyperDrive account), choose a username, then **separately**
+> connect Google Drive and Dropbox accounts and browse them in one "All storage" view. A local
+> **agent** reads file contents directly from the providers in bounded 4 MiB pieces, with an
 > encrypted cache for eligible Dropbox reads, and a **WinFsp drive** (default `H:`) shows your
-> accounts, folders and file details in Explorer. **File contents can't be opened through the
-> drive yet** (next batch); there is no streaming, download or writing. Live Google Drive and
-> Dropbox use has not been tested with real credentials yet. See [docs/progress.md](docs/progress.md).
+> accounts in Explorer and lets applications **read** files on demand. Nothing can be written.
+> Verified with a deterministic **fixture** provider on a real WinFsp mount; live Google Drive and
+> Dropbox use has **not** been tested with real credentials yet, and no application compatibility
+> beyond Windows file APIs, CopyFile and Node/.NET readers is claimed. See
+> [docs/progress.md](docs/progress.md).
 
 The launch website is a separate project and is not part of this repository.
 
@@ -83,12 +85,12 @@ The launch website is a separate project and is not part of this repository.
   - The cache is not offline access, and nothing has been verified against live Dropbox or Google.
   - Design: [docs/cache.md](docs/cache.md) · [ADR 0003](docs/adr/0003-cache-consistency-and-key-lifecycle.md).
 
-- **Batch 8 (read-only, metadata-only virtual drive):**
+- **Batch 8 (read-only virtual drive, metadata):**
   - A C++ WinFsp program (`vfs/`) mounts a read-only drive (default `H:`, configurable D–Z) on
     **Overview → Virtual drive → Mount**. The root has one folder per connected account; below
     are its real folders and file details.
-  - **Contents can't be read through the drive yet**: reads fail immediately with an explicit
-    "not supported" error; writes fail as write-protected.
+  - (Batch 8 alone served metadata only; Batch 9 below adds file content.) Writes fail as
+    write-protected.
   - Authorization is scoped: a 15-minute backend **metadata grant** (metadata routes only) and a
     per-mount agent **capability** (VFS routes only). The VFS never sees provider tokens, session
     tokens, cache keys or the agent's secret.
@@ -97,6 +99,23 @@ The launch website is a separate project and is not part of this repository.
     stand-in backend; **not** yet with live Google Drive or Dropbox accounts.
   - Details: [docs/virtual-drive.md](docs/virtual-drive.md) ·
     [ADR 0004](docs/adr/0004-vfs-transport-and-scoped-metadata-authorization.md).
+
+- **Batch 9 (file content through the drive):**
+  - Applications can read files on the mounted drive. The VFS asks the agent for byte ranges
+    through **opaque, agent-owned read handles**; the agent reads them with the existing Batch 6/7
+    engine (direct provider reads, Dropbox encrypted chunk cache, Google uncached). File bytes
+    never pass through the backend, Electron or React.
+  - Each handle is validated against fresh backend metadata and bound to one mount generation,
+    account and file. Dropbox handles stay on the revision seen at open and fail if it disappears;
+    Google reads detect size changes but not same-size changes (documented limitation).
+  - Large Windows reads are split into ≤ 4 MiB agent reads; EOF, files over 4 GiB, concurrent
+    readers, unmount with reads in flight, VFS and agent crashes are tested on a real mount with a
+    test-only fixture provider (`vfs/tests/content-mount-check.mjs`).
+  - Delegated provider credentials are renewed on the agent's request by the desktop's main
+    process, with the signed-in session; no window needs to be open.
+  - The Virtual drive card shows "read-only virtual drive" and the agent's real read counters.
+  - Details: [docs/virtual-drive.md](docs/virtual-drive.md) ·
+    [ADR 0005](docs/adr/0005-mounted-content-reads.md).
 
 Design and security details: [docs/authentication.md](docs/authentication.md) ·
 [docs/google-drive.md](docs/google-drive.md) · [docs/dropbox.md](docs/dropbox.md) ·
@@ -255,8 +274,9 @@ not passed).
 backend/    Spring Boot service: health/readiness, Google sign-in, accounts, sessions,
             Google Drive and Dropbox connections and read-only browsing
 desktop/    Electron + React desktop app
-agent/      Java 21 local agent: loopback API, bounded reads, encrypted cache, VFS metadata
-vfs/        C++ WinFsp virtual drive (read-only, metadata only)
+agent/      Java 21 local agent: loopback API, bounded reads, encrypted cache, VFS metadata and
+            read handles
+vfs/        C++ WinFsp virtual drive (read-only; content through the agent)
 docs/       Architecture, authentication, security, development notes, progress log
 compose.yaml, .env.example
 ```

@@ -86,7 +86,8 @@ export function parseStatus(value: unknown): AgentStatusBody | null {
       providerReads: flag('providerReads'),
       rangeReads: flag('rangeReads'),
       chunkCache: flag('chunkCache'),
-      virtualDrive: flag('virtualDrive')
+      virtualDrive: flag('virtualDrive'),
+      virtualDriveContent: flag('virtualDriveContent')
     }
   };
 }

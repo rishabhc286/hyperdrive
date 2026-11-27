@@ -17,7 +17,7 @@ const STATUS = {
   instanceId: INSTANCE,
   readiness: 'READY',
   uptimeMillis: 1234,
-  capabilities: { providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false },
+  capabilities: { providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false, virtualDriveContent: false },
   lastStartupError: null
 };
 
@@ -129,7 +129,7 @@ describe('AgentManager: startup', () => {
     expect(status.state).toBe('ready');
     expect(status.agentVersion).toBe('0.1.0');
     expect(status.uptimeMillis).toBe(1234);
-    expect(status.capabilities).toEqual({ providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false });
+    expect(status.capabilities).toEqual({ providerReads: false, rangeReads: false, chunkCache: false, virtualDrive: false, virtualDriveContent: false });
     expect(states.map((s) => s.state)).toEqual(['starting', 'ready', 'ready']);
     expect(JSON.stringify(states)).not.toMatch(new RegExp(`${SECRET}|50123|java\\.exe|AppData`));
     // Batch 8: the loopback port is available to the main process only while ready.

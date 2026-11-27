@@ -139,11 +139,7 @@ TEST(RootSnapshotListsAccountsWithStableNames) {
     CHECK(s->Entries()[0].kind == NodeKind::Account);
 }
 
-TEST(ReadsFailHonestlyAndMutationsAreWriteProtected) {
-    CHECK(StatusForRead(0, 0) == STATUS_END_OF_FILE);
-    CHECK(StatusForRead(10, 10) == STATUS_END_OF_FILE);
-    CHECK(StatusForRead(10, 0) == STATUS_NOT_SUPPORTED);
-    CHECK(StatusForRead(10, 9) == STATUS_NOT_SUPPORTED);
+TEST(MutationsAreWriteProtected) {  // content reads: test_content.cpp
     CHECK(kReadOnlyStatus == STATUS_MEDIA_WRITE_PROTECTED);
     CHECK((kWriteAccessMask & FILE_WRITE_DATA) != 0);
     CHECK((kWriteAccessMask & DELETE) != 0);

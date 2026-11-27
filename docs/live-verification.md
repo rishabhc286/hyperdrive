@@ -129,6 +129,13 @@ status codes and cache outcomes: never tokens or file contents.
 | 12 | Google reads bypass the persistent cache | Verify file read on Drive → "Bypassed: provider not version-bound" | **Not executed** live (mock-tested) |
 | 13 | Dropbox "Revoke access and disconnect" | Section 5 | **Not executed** live (mock-tested) |
 | 14 | Real Windows `safeStorage` key protection | Section 6 | **Passed live** (2026-11-23, this machine) |
+| 15 | Mounted drive: copy a Google Drive binary out, compare SHA-256 | Mount → Explorer → copy `hd-5mib.bin` to a local folder → `Get-FileHash` vs. original | **Not executed**: blockers 1–3 (fixture-tested) |
+| 16 | Mounted drive: copy a Dropbox binary out, compare SHA-256 | Same with the Dropbox copy | **Not executed**: blocker 4 (fixture-tested) |
+| 17 | Mounted drive: random-offset reads | PowerShell `[IO.File]::OpenRead` + `Seek`/`Read` at several offsets vs. the local file | **Not executed** (fixture-tested) |
+| 18 | Mounted drive: Dropbox cache hits, Google bypass | Read a Dropbox file twice with non-cached I/O (`vfs/tests/unbuffered-read.ps1`); card's "From the local encrypted cache" grows for Dropbox only | **Not executed** (fixture-tested) |
+| 19 | Mounted drive: PDF opens in an installed viewer | Open a test PDF from `H:\` | **Not executed**: no live account; no viewer tested |
+| 20 | Mounted drive: video opens and seeks in an installed player | Open a test video, seek forward/back | **Not executed**: no live account; no player tested |
+| 21 | Mounted drive: sign out / disconnect while a large copy is running | Start copying a large file, then sign out (or disconnect) | **Not executed** live (fixture: unmount with outstanding read passes) |
 
 ## 4. Dropbox cache-eligibility record
 

@@ -19,8 +19,8 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>Never written to disk or logs; {@link Credential#toString()} is redacted.</li>
- *   <li>At most one credential per connected account (a new delegation replaces the old one) and at
- *       most {@link #MAX_CREDENTIALS} overall.</li>
+ *   <li>At most one usable credential per connected account (a new delegation replaces the old one;
+ *       reads already using the old one finish) and at most {@link #MAX_CREDENTIALS} overall.</li>
  *   <li>Two expiries: the provider's stated expiry, and a shorter local retention. Whichever comes
  *       first ends local use. Neither changes what the provider token can do elsewhere.</li>
  *   <li>Removing a credential cancels its in-flight reads.</li>
@@ -82,6 +82,10 @@ public final class CredentialRegistry {
     public record Installed(String handle, Instant retentionExpiresAt, Instant providerExpiresAt) {
     }
 
+    /** The account's current usable credential (Batch 9 mount reads look credentials up by account). */
+    public record Live(String handle, Provider provider, Instant retentionExpiresAt) {
+    }
+
     private static final Pattern TOKEN = Pattern.compile("^[\\x21-\\x7e]{16,4096}$");
     private static final Pattern NAMESPACE = Pattern.compile("^[0-9]{1,64}$");
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -89,6 +93,12 @@ public final class CredentialRegistry {
     private final Clock clock;
     private final Map<String, Credential> byHandle = new HashMap<>();
     private final Map<UUID, String> handleByAccount = new HashMap<>();
+    /**
+     * Credentials replaced by a newer delegation (or retired after a provider rejection) whose reads
+     * may still be running. They can't be looked up any more, but clearing the account still cancels
+     * those reads. Pruned once their reads finish.
+     */
+    private final Map<UUID, List<Credential>> retired = new HashMap<>();
 
     public CredentialRegistry(Clock clock) {
         this.clock = clock;
@@ -109,9 +119,12 @@ public final class CredentialRegistry {
             throw new ReadException("credential_expired", 409);
         }
         purgeExpired(now);
+        pruneRetired();
         String previous = handleByAccount.remove(accountId);
         if (previous != null) {
-            discard(byHandle.remove(previous));
+            // Replaced, not revoked: reads already using the previous token finish normally (the
+            // provider token stays valid until it expires); new reads get the new credential.
+            retireCredential(byHandle.remove(previous));
         }
         if (byHandle.size() >= MAX_CREDENTIALS) {
             throw new ReadException("too_many_credentials", 503);
@@ -141,6 +154,38 @@ public final class CredentialRegistry {
         return credential;
     }
 
+    /**
+     * The account's live credential, or null when there is none or it has expired (an expired one is
+     * removed, as by {@link #get}).
+     */
+    public synchronized Live live(UUID accountId) {
+        String handle = accountId == null ? null : handleByAccount.get(accountId);
+        Credential credential = handle == null ? null : byHandle.get(handle);
+        if (credential == null) {
+            return null;
+        }
+        Instant now = clock.instant();
+        if (!now.isBefore(credential.retentionExpiresAt) || !credential.providerExpiresAt.minus(EXPIRY_MARGIN).isAfter(now)) {
+            remove(credential);
+            return null;
+        }
+        return new Live(credential.handle, credential.provider, credential.retentionExpiresAt);
+    }
+
+    /**
+     * Stops handing out one credential (the provider rejected it) without cancelling reads that are
+     * using it. Returns whether it was still current.
+     */
+    public synchronized boolean retire(String handle) {
+        Credential credential = handle == null ? null : byHandle.remove(handle);
+        if (credential == null) {
+            return false;
+        }
+        handleByAccount.remove(credential.accountId, handle);
+        retireCredential(credential);
+        return true;
+    }
+
     /** Removes one account's credential (or all when {@code accountId} is null); returns how many. */
     public synchronized int clear(UUID accountId) {
         List<Credential> removed = new ArrayList<>();
@@ -148,14 +193,31 @@ public final class CredentialRegistry {
             removed.addAll(byHandle.values());
             byHandle.clear();
             handleByAccount.clear();
+            retired.values().forEach(list -> list.forEach(CredentialRegistry::discard));
+            retired.clear();
         } else {
             String handle = handleByAccount.remove(accountId);
             if (handle != null) {
                 removed.add(byHandle.remove(handle));
             }
+            List<Credential> old = retired.remove(accountId);
+            if (old != null) {
+                old.forEach(CredentialRegistry::discard);
+            }
         }
         removed.forEach(CredentialRegistry::discard);
         return removed.size();
+    }
+
+    private void retireCredential(Credential credential) {
+        if (credential != null && !credential.inFlight.isEmpty()) {
+            retired.computeIfAbsent(credential.accountId, id -> new ArrayList<>()).add(credential);
+        }
+    }
+
+    private void pruneRetired() {
+        retired.values().forEach(list -> list.removeIf(c -> c.inFlight.isEmpty()));
+        retired.values().removeIf(List::isEmpty);
     }
 
     public synchronized int size() {

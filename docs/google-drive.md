@@ -426,6 +426,18 @@ How the agent reads ranges is described in
   would change users' files. See
   [ADR 0003](adr/0003-cache-consistency-and-key-lifecycle.md).
 
+### Reads through the mounted drive (Batch 9)
+
+- The drive reads Google files through the same agent path: `alt=media` ranges, never cached.
+- A mounted handle checks every range's `Content-Range` total against the size at open, so a file
+  that grows or shrinks fails (`STATUS_FILE_INVALID`). **A modification that keeps the size isn't
+  detected**: Drive's media endpoint serves the current content and can't be pinned to a revision
+  (only "Keep Forever" revisions are retrievable), so a long-open file could mix two versions.
+  Before/after metadata checks would not prove atomicity either, so none are claimed.
+- `headRevisionId` is passed through as information only. Native documents, shortcuts and files
+  without a size aren't shown on the drive.
+- Not verified live (no OAuth client). See [virtual-drive.md](virtual-drive.md).
+
 ### Manual QA: content reads (requires real Google credentials)
 
 Not executed yet.

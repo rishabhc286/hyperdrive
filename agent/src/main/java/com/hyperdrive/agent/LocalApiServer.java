@@ -107,9 +107,10 @@ final class LocalApiServer {
             throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0), 32);
         // Reads block a worker while the provider answers. A ThreadPoolExecutor only grows past its core
-        // size when the queue is full, so the core size IS the concurrency: 12 workers (8 reads max plus
-        // headroom for status and credential calls), idle ones time out.
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(12, 12, 30, TimeUnit.SECONDS, new LinkedBlockingQueue<>(32),
+        // size when the queue is full, so the core size IS the concurrency: 16 workers (8 reads max plus
+        // headroom for VFS metadata, close/cancel, the renewal long poll, status and credential calls), idle
+        // ones time out.
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(16, 16, 30, TimeUnit.SECONDS, new LinkedBlockingQueue<>(32),
                 r -> {
                     Thread t = new Thread(r, "agent-http");
                     t.setDaemon(true);

@@ -101,4 +101,21 @@ public class VfsMetadataController {
                 .toList();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new VfsPage(items, listing.continuation()));
     }
+
+    /**
+     * Batch 9: one file's current metadata by stable provider id, for the agent's OpenRead (ADR 0005).
+     * The agent's source of truth for size, kind and revision; never the VFS. No name, hash or path.
+     */
+    public record VfsFile(String id, StorageProvider provider, ProviderFile.FileKind kind, Long sizeBytes,
+            Instant modifiedAt, String providerRevision, boolean canDownload) {
+    }
+
+    @GetMapping("/api/v1/vfs/accounts/{accountId}/files/{fileId}")
+    public ResponseEntity<VfsFile> file(@AuthenticationPrincipal MetadataPrincipal principal,
+            @PathVariable UUID accountId, @PathVariable String fileId) {
+        StorageFilesService.OwnedFile owned = files.getOwned(principal.userId(), accountId, fileId);
+        ProviderFile f = owned.file();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new VfsFile(f.providerFileId(),
+                owned.provider(), f.kind(), f.sizeBytes(), f.modifiedAt(), f.providerRevision(), f.canDownload()));
+    }
 }

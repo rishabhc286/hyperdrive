@@ -1,4 +1,4 @@
-# Local chunk cache (Batch 7)
+# Local chunk cache (Batch 7; used by the mounted drive since Batch 9)
 
 The local agent keeps an **encrypted, bounded** cache of 4 MiB file chunks on this PC. It is a
 performance cache for reads that the agent can prove are bound to one exact file version. It is
@@ -225,6 +225,24 @@ be served from a cached chunk until the account is disconnected or the user logs
 
 Counters reset when the agent restarts. There is no "savings" metric, because there's no measured
 baseline to compare against.
+
+## The mounted drive (Batch 9)
+
+- Reads through the virtual drive use **this cache unchanged**: same eligibility (Dropbox
+  `rev:`-pinned reads confirmed by `Dropbox-API-Result`; Google never), same encryption, budget,
+  LRU and per-user/account/version keys. Nothing was loosened for the drive, and the VFS has no
+  cache of its own.
+- A mounted Dropbox handle is pinned to one revision for its lifetime, so its chunks are cached
+  and served under that revision only; a newer revision is a different cache entry.
+- `GET /local/v1/vfs/status` counts the drive's own traffic separately: `bytesReturned` (to the
+  VFS), `providerBytes` (downloaded for those reads; whole 4 MiB chunks on eligible misses) and
+  `cacheBytes` (answered from this cache). The desktop's Virtual drive card shows them.
+- **Windows' own cache is separate:** the Windows cache manager keeps recently read file data in
+  memory and may answer an application's repeated reads without calling the VFS at all. Neither
+  cache's counters therefore equal what an application read. Fixture evidence of agent-cache hits
+  used non-cached I/O to force reads to the agent.
+- Invalidation is unchanged: disconnect and logout purge as before; late publication after
+  invalidation is prevented by the Batch 7 epochs, which mounted reads share.
 
 ## Manual verification (requires a real Dropbox app and Google client)
 

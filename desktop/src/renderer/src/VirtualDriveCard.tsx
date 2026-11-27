@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { VirtualDriveApi, VirtualDriveError, VirtualDriveStatus } from '../../shared/vfs';
-import { METADATA_ONLY_NOTICE } from '../../shared/vfs';
+import type { VirtualDriveActivity, VirtualDriveApi, VirtualDriveError, VirtualDriveReadIssue, VirtualDriveStatus } from '../../shared/vfs';
+import { READ_ONLY_NOTICE } from '../../shared/vfs';
+import { formatSize } from './storage-format';
 
 const LETTERS = 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
@@ -26,6 +27,44 @@ export const ERROR_MESSAGES: Record<VirtualDriveError, string> = {
   unknown: 'Something went wrong with the virtual drive.'
 };
 
+export const READ_ISSUE_MESSAGES: Record<VirtualDriveReadIssue, string> = {
+  'reconnect-needed': 'A cloud account needs to be connected again before its files can be read. Reconnect it under Accounts.',
+  'content-permission-missing': 'HyperDrive isn’t allowed to read file contents for an account. Reconnect it to allow reads.',
+  'session-expired': 'Your HyperDrive session ended, so files can’t be read. Sign in again.',
+  network: 'A file couldn’t be read because the cloud service or the HyperDrive server wasn’t reachable.',
+  timeout: 'Reading a file took too long and was stopped.',
+  'rate-limited': 'The cloud service is limiting requests. Try again shortly.',
+  'file-changed': 'A file changed in the cloud while it was open. Close it and open it again.',
+  'unsupported-file': 'A file can’t be read through the drive (for example, its size or version isn’t known).',
+  'not-found': 'A file no longer exists in the cloud.',
+  other: 'A file couldn’t be read through the drive.'
+};
+
+function Activity({ activity }: { activity: VirtualDriveActivity }) {
+  return (
+    <>
+      <dl className="facts small" aria-label="Drive activity">
+        <dt>Open files</dt>
+        <dd>{activity.openFiles}</dd>
+        <dt>Reads by the drive</dt>
+        <dd>{activity.reads}</dd>
+        <dt>Returned to Windows</dt>
+        <dd>{formatSize(activity.bytesReturned)}</dd>
+        <dt>Downloaded from the cloud</dt>
+        <dd>{formatSize(activity.providerBytes)}</dd>
+        <dt>From the local encrypted cache</dt>
+        <dd>{formatSize(activity.cacheBytes)}</dd>
+      </dl>
+      <p className="muted small">Counted by the local agent since it started. Windows may answer repeated reads from its own memory without asking the drive.</p>
+      {activity.lastIssue && (
+        <div className="notice notice-warn" role="status">
+          {READ_ISSUE_MESSAGES[activity.lastIssue]}
+        </div>
+      )}
+    </>
+  );
+}
+
 function headline(s: VirtualDriveStatus): string {
   switch (s.state) {
     case 'prerequisite-missing':
@@ -39,7 +78,7 @@ function headline(s: VirtualDriveStatus): string {
     case 'mounting':
       return `Mounting ${s.driveLetter}:…`;
     case 'mounted':
-      return `Mounted as ${s.driveLetter}: — metadata only`;
+      return `Mounted as ${s.driveLetter}: — read-only virtual drive`;
     case 'unmounting':
       return 'Unmounting…';
     case 'failed':
@@ -54,7 +93,7 @@ const PHASES: Record<NonNullable<VirtualDriveStatus['phase']>, string> = {
   mounted: 'Mounted'
 };
 
-/** Virtual Drive card (Batch 8). Shows only states the main process confirmed. */
+/** Virtual Drive card (Batch 8/9). Shows only states and counters the main process confirmed. */
 export function VirtualDriveCard({ vfs }: { vfs: VirtualDriveApi }) {
   const [status, setStatus] = useState<VirtualDriveStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -68,6 +107,14 @@ export function VirtualDriveCard({ vfs }: { vfs: VirtualDriveApi }) {
     refresh();
     return vfs.onChange(setStatus);
   }, [vfs, refresh]);
+
+  // While mounted, refresh the agent's counters now and then (display only; reads never depend on it).
+  const mounted = status?.state === 'mounted';
+  useEffect(() => {
+    if (!mounted) return undefined;
+    const timer = setInterval(refresh, 5_000);
+    return () => clearInterval(timer);
+  }, [mounted, refresh]);
 
   const run = async (action: () => Promise<VirtualDriveStatus>) => {
     setBusy(true);
@@ -106,7 +153,8 @@ export function VirtualDriveCard({ vfs }: { vfs: VirtualDriveApi }) {
             </div>
           )}
           {status.state === 'mounting' && status.phase && <p className="muted small">{PHASES[status.phase]}…</p>}
-          <p className="muted small">{METADATA_ONLY_NOTICE}</p>
+          <p className="muted small">{READ_ONLY_NOTICE}</p>
+          {status.state === 'mounted' && status.activity && <Activity activity={status.activity} />}
           {(status.state === 'ready' || status.state === 'failed') && (
             <label className="small">
               Drive letter{' '}

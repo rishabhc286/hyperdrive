@@ -60,6 +60,14 @@ public final class ReadService {
     }
 
     public ReadResult read(ReadRequest request) throws ReadException {
+        return read(request, null);
+    }
+
+    /**
+     * Same contract; {@code external} (Batch 9 mount read contexts) cancels this read when the caller's
+     * context closes, its mount ends or its deadline passes.
+     */
+    public ReadResult read(ReadRequest request, CancelToken external) throws ReadException {
         if (request.offset() < 0 || request.length() < 1 || request.length() > MAX_READ_BYTES || request.expectedSize() < 0) {
             throw ReadException.invalid();
         }
@@ -89,6 +97,9 @@ public final class ReadService {
             }
             CancelToken cancel = new CancelToken();
             credential.inFlight.add(cancel);
+            if (external != null) {
+                external.onCancel(cancel::cancel);
+            }
             try {
                 String bypass = cache == null ? "cache_disabled"
                         : cache.bypassReason(credential.provider(), request.expectedRevision());

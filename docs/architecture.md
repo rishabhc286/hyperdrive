@@ -80,10 +80,12 @@ process.
 - See [ADR 0002](adr/0002-provider-access-token-delegation.md) and
   [local-agent.md](local-agent.md#bounded-read-contract-batch-6).
 
-**Still planned:** prefetching, throughput metrics, and the transport for content reads through
-the drive (Batch 9).
+**Mounted content reads (Batch 9):** the same `ReadService` serves the drive through agent-owned
+read contexts (`vfs/VfsReadService`) and a renewal broker (`vfs/CredentialBroker`); see below.
 
-### VFS (Batch 8): read-only, metadata only
+**Still planned:** prefetching and throughput metrics.
+
+### VFS (Batches 8 and 9): read-only drive with file content
 
 - **What:** C++ WinFsp filesystem (`vfs/`, `hyperdrive-vfs.exe`) started by the desktop's
   `VfsManager` (no shell, no arguments, bootstrap on stdin). It mounts a read-only drive letter
@@ -96,7 +98,20 @@ the drive (Batch 9).
   only) held by the VFS.
 - **Data:** one directory listing at a time, assembled by the agent from backend pages (bounded),
   snapshotted and enumerated by the VFS with WinFsp markers. Names are mapped deterministically.
-- **Content reads:** not implemented (`STATUS_NOT_SUPPORTED`). Details: [virtual-drive.md](virtual-drive.md).
+- **Content reads (Batch 9, [ADR 0005](adr/0005-mounted-content-reads.md)):** the VFS opens an
+  **agent-owned read handle** (`hdf_`, capability route `/local/v1/vfs/open`) lazily on a file's
+  first read; the agent validates the file against fresh backend metadata by provider id
+  (`GET /api/v1/vfs/accounts/{id}/files/{fileId}`, grant) and pins size, provider and Dropbox
+  revision. Reads (`/local/v1/vfs/read`, ≤ 4 MiB, raw bytes) go through the Batch 6/7
+  `ReadService`: Dropbox `rev:`-pinned chunks may come from the encrypted cache; Google is read
+  directly. The VFS splits larger Windows reads, writes bytes straight into the WinFsp buffer and
+  fails a read completely when any piece fails. Handles end in WinFsp `Close`, on unmount,
+  logout, disconnect, a new mount and agent exit.
+- **Credential renewal:** the agent asks for credentials it lacks; Electron main long-polls
+  (`/local/v1/vfs/credential-requests`), delegates with the session (Batch 6 route) and installs
+  for the same mount generation (`VfsCredentialPump`). No renderer involvement.
+- **Data path:** provider → agent → VFS → Windows. Bytes never pass through the backend, Electron
+  or React. Details: [virtual-drive.md](virtual-drive.md).
 
 ### Cloud storage (Batches 3–4): implemented for Google Drive and Dropbox metadata
 
@@ -186,9 +201,10 @@ They are **never** stored in Redis or PostgreSQL, and the backend never sees the
 | Content download (whole file) | **Not implemented** | **Not implemented** |
 | Bounded range read via agent (≤ 4 MiB, diagnostic) | Implemented: `files.get?alt=media`, ordinary binaries only, **not revision-pinned** | Implemented: `files/download`, ordinary files, **pinned with `rev:`** when the listed revision is known |
 | Persistent encrypted chunk cache | **Bypassed: never cached** (`provider_not_version_bound`) | Implemented for `rev:` reads confirmed by `Dropbox-API-Result`; unconfirmed reads served uncached |
-| Streaming / playback / prefetching | **Not implemented** | **Not implemented** |
+| Reads through the mounted drive (Batch 9) | Implemented: agent read handles, **not revision-pinned**, size change detected, same-size change not detected, never cached | Implemented: agent read handles **pinned to the revision at open**, encrypted-cache eligible |
+| Playback / prefetching | **Not implemented** (no player tested) | **Not implemented** (no player tested) |
 | Writes (upload/edit/rename/move/delete) | **Not implemented** | **Not implemented** |
-| Mounted drive (WinFsp, Batch 8) | Folders and files with size/time; native documents and shortcuts not shown; **no content reads** | Folders and files with size/time; **no content reads** |
+| Mounted drive (WinFsp, Batches 8/9) | Folders and files with size/time; native documents and shortcuts not shown; content readable | Folders and files with size/time; content readable |
 | Credentials in the agent | Delegated access token only, memory-only, ≤ 20 min retention | Delegated access token only, memory-only, ≤ 20 min retention |
 | Live end-to-end verification | Not yet (no OAuth client); reads tested only against local mock servers | Not yet (no Dropbox app); reads tested only against local mock servers |
 

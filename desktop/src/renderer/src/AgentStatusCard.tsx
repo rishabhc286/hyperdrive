@@ -95,9 +95,11 @@ export function AgentStatusCard({ status, restarting, onRestart }: Props) {
           ? ' It can read bounded byte ranges (at most 4 MiB at a time) of your files from Google Drive or Dropbox when you run “Verify file read”, using short-lived access the HyperDrive server delegates to it in memory.'
           : ' It doesn’t read files from Google Drive or Dropbox.'}{' '}
         {status?.capabilities?.chunkCache ? ' It keeps an encrypted cache of eligible Dropbox file pieces on this PC.' : ''}
-        {status?.capabilities?.virtualDrive
-          ? ' It serves folder and file details (not contents) to the virtual drive while it’s mounted.'
-          : ''}{' '}
+        {status?.capabilities?.virtualDriveContent
+          ? ' While the virtual drive is mounted, it serves folder details and, when an app reads a file, that file’s contents (read-only, in the same bounded pieces).'
+          : status?.capabilities?.virtualDrive
+            ? ' It serves folder and file details (not contents) to the virtual drive while it’s mounted.'
+            : ''}{' '}
         Browsing your cloud accounts in this window doesn’t depend on it.
       </p>
       <button type="button" className="button button-secondary" onClick={onRestart} disabled={busy}>

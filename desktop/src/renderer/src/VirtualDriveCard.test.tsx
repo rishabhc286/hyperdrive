@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { createMockVfs, VFS_READY } from '../../../test/mock-api';
-import { METADATA_ONLY_NOTICE } from '../../shared/vfs';
+import { READ_ONLY_NOTICE } from '../../shared/vfs';
 import { VirtualDriveCard } from './VirtualDriveCard';
 
 describe('VirtualDriveCard', () => {
@@ -10,16 +10,34 @@ describe('VirtualDriveCard', () => {
     const vfs = createMockVfs();
     render(<VirtualDriveCard vfs={vfs.api} />);
     expect(await screen.findByText('Ready to mount as H:')).toBeInTheDocument();
-    expect(screen.getByText(METADATA_ONLY_NOTICE)).toBeInTheDocument();
+    expect(screen.getByText(READ_ONLY_NOTICE)).toBeInTheDocument();
+    expect(screen.queryByText(/metadata only|next batch/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open in Explorer' })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Mount' }));
-    expect(await screen.findByText('Mounted as H: — metadata only')).toBeInTheDocument();
+    expect(await screen.findByText('Mounted as H: — read-only virtual drive')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Open in Explorer' }));
     expect(vfs.api.openInExplorer).toHaveBeenCalledWith();
 
     await userEvent.click(screen.getByRole('button', { name: 'Unmount' }));
     expect(await screen.findByText('Ready to mount as H:')).toBeInTheDocument();
+  });
+
+  it('shows the agent\'s real counters and a safe message for the last read problem', async () => {
+    const vfs = createMockVfs({
+      ...VFS_READY,
+      state: 'mounted',
+      phase: 'mounted',
+      activity: { openFiles: 2, reads: 17, bytesReturned: 5 * 1024 * 1024, providerBytes: 8 * 1024 * 1024, cacheBytes: 1024 * 1024, lastIssue: 'reconnect-needed' }
+    });
+    render(<VirtualDriveCard vfs={vfs.api} />);
+    expect(await screen.findByText('Mounted as H: — read-only virtual drive')).toBeInTheDocument();
+    const facts = screen.getByLabelText('Drive activity');
+    expect(facts).toHaveTextContent('Open files2');
+    expect(facts).toHaveTextContent('Reads by the drive17');
+    expect(facts).toHaveTextContent('Downloaded from the cloud8');
+    expect(screen.getByRole('status')).toHaveTextContent(/connected again/);
+    expect(document.body.textContent).not.toMatch(/offline available|NTFS|guaranteed|video/i);
   });
 
   it('shows progress and failures pushed by the main process, never a premature Mounted', async () => {
